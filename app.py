@@ -2,189 +2,291 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import time
 
-# --- PAGE SETUP & COLORS ---
-st.set_page_config(page_title="Pro Institutional Scanner", layout="wide", page_icon="⚡")
+# --- PAGE CONFIGURATION & UI THEME ---
+st.set_page_config(page_title="Institutional Sniper v2.0", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 42px; font-weight: 800; color: #1E88E5; margin-bottom: 0px; }
-    .sub-title { font-size: 18px; color: #607D8B; margin-bottom: 25px; }
-    .stProgress .st-bo { background-color: #1E88E5; }
+    .main-title { font-size: 40px; font-weight: 800; color: #00E676; margin-bottom: 0px; letter-spacing: 1px; }
+    .sub-title { font-size: 16px; color: #90A4AE; margin-bottom: 30px; }
+    .metric-card { background-color: #1E293B; padding: 15px; border-radius: 10px; border-left: 5px solid #00E676; }
+    .stButton>button { border-radius: 8px; font-weight: 700; letter-spacing: 0.5px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">⚡ Elite Institutional Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Strict Boring Candle (<50%) & Advanced Supply/Demand algorithmic filtering across NIFTY 500.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">⚡ INSTITUTIONAL SNIPER ENGINE v2.0</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Advanced Order Block, Multi-Timeframe Multi-Segment Liquidity Scanner</p>', unsafe_allow_html=True)
 
-# --- LOAD NIFTY 500 ---
-@st.cache_data
-def load_nifty500_symbols():
-    try:
-        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-        df = pd.read_csv(url)
-        return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
-    except Exception:
-        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS"]
+# --- AUTOMATED SECTOR DATA LOADER ---
+@st.cache_data(ttl=86400)
+def load_all_nse_segments():
+    segments = {}
+    def format_tickers(url):
+        try:
+            df = pd.read_csv(url)
+            return (df['Symbol'].astype(str).str.strip() + ".NS").tolist()
+        except:
+            return []
 
-nifty500_list = load_nifty500_symbols()
+    segments["NIFTY 50 (Mega Cap)"] = format_tickers("https://archives.nseindia.com/content/indices/ind_nifty50list.csv")
+    segments["NIFTY 100 (Large Cap)"] = format_tickers("https://archives.nseindia.com/content/indices/ind_nifty100list.csv")
+    segments["NIFTY Midcap 100"] = format_tickers("https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv")
+    segments["NIFTY Smallcap 250"] = format_tickers("https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv")
+    segments["Full NIFTY 500"] = format_tickers("https://archives.nseindia.com/content/indices/ind_nifty500list.csv")
+    
+    fallback = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS", "SBIN.NS", "ITC.NS", "HINDALCO.NS"]
+    for k in list(segments.keys()):
+        if not segments[k]:
+            segments[k] = fallback
+            
+    return segments
 
-# --- SIDEBAR MENU (ATTRACTIVE LAYOUT) ---
+all_segments = load_all_nse_segments()
+
+# --- SIDEBAR CONTROL PANEL ---
 with st.sidebar:
-    st.header("🎛️ Scanner Settings")
-    scan_mode = st.radio("Scan Range", ["Test Scan (10 Stocks)", "Full NIFTY 500"])
+    st.header("🎛️ Strategic Controls")
+    market_segment = st.selectbox("🎯 Select Market Segment", list(all_segments.keys()))
+    scan_range = st.radio("Scan Target Length", ["Full Segment Scan", "Quick Test (First 5 Stocks)"])
     
     st.divider()
-    timeframe = st.selectbox("⏳ Timeframe", ["1d", "1wk", "1mo", "3mo", "6mo", "12mo"])
-    zone_type = st.selectbox("📈 Zone Type", ["Bullish Demand Zone", "Bearish Supply Zone"])
+    st.markdown("### 📈 Trading Profile Pre-sets")
+    profile = st.selectbox("Choose Profile", ["Custom", "Intraday Trading", "Swing Trading", "Long-Term Investing"])
+    
+    if profile == "Intraday Trading":
+        timeframe = st.selectbox("⏳ Timeframe", ["15m", "75m", "125m"])
+    elif profile == "Swing Trading":
+        timeframe = st.selectbox("⏳ Timeframe", ["1d", "1wk"])
+    elif profile == "Long-Term Investing":
+        timeframe = st.selectbox("⏳ Timeframe", ["1wk", "1mo", "3mo"])
+    else:
+        timeframe = st.selectbox("⏳ Timeframe", ["15m", "75m", "125m", "1d", "1wk", "1mo", "3mo"])
+        
+    zone_type = st.selectbox("📉 Order Type", ["Bullish Demand Zone", "Bearish Supply Zone"])
     
     st.divider()
-    st.markdown("### 🕯️ Candle Strictness")
-    base_limit = st.slider("Max Base Candles Allowed", 1, 6, 5)
+    st.markdown("### 🎯 Zone State Filter")
+    state_filter = st.selectbox("Filter by Zone Condition", [
+        "All Valid Zones",
+        "Just Approaching (Nearing Edge)",
+        "In the Zone (2-3 Candles Formed)",
+        "Unmitigated (100% Completely Fresh)"
+    ])
     
-    min_legout, max_legout = st.slider("Leg-Out Candles (Min - Max)", 1, 6, (1, 3))
-    
-    # NEW: Min/Max slider for Leg-out body size (51% to 100%)
-    min_leg_pct, max_leg_pct = st.slider("Leg-Out Body Size (%)", 51, 100, (60, 100), help="Minimum and maximum body percentage for an explosive leg-out.")
+    st.divider()
+    st.markdown("### 🕯️ Advanced Candle Strictness")
+    base_limit = st.slider("Max Base Candles Allowed", 1, 6, 4)
+    min_legout = st.slider("Min Leg-Out Candles Required", 1, 4, 2)
+    min_legout_size_pct = st.slider("Minimum Leg-Out Candle Body Size (%)", 51, 100, 55)
 
-symbols_to_scan = nifty500_list[:10] if "Test" in scan_mode else nifty500_list
+base_list = all_segments[market_segment]
+symbols_to_scan = base_list[:5] if "Quick Test" in scan_range else base_list
 
-# --- CORE ALGORITHM ---
-def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, min_leg_pct, max_leg_pct):
+# --- FLAWLESS INTRADAY RESAMPLING ENGINE ---
+def fetch_and_resample(ticker, tf):
+    t = yf.Ticker(ticker)
+    if tf == "15m":
+        return t.history(period='60d', interval='15m', timeout=1.5)
+    elif tf in ["75m", "125m"]:
+        # Safe Date-Isolated Grouping to prevent Overnight Gap blending
+        base_interval = '15m' if tf == "75m" else '5m'
+        group_size = 5 if tf == "75m" else 25
+        
+        raw = t.history(period='60d', interval=base_interval, timeout=1.5)
+        if len(raw) < group_size: return None
+        
+        raw['Date'] = raw.index.date
+        raw['block'] = raw.groupby('Date').cumcount() // group_size
+        
+        df = raw.groupby(['Date', 'block']).agg({
+            'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'
+        })
+        
+        # Reconstruct the index properly
+        df.index = raw.groupby(['Date', 'block']).apply(lambda x: x.index[0])
+        return df
+    elif tf in ["1d", "1wk"]:
+        return t.history(period='3y', interval=tf, timeout=1.5)
+    else:
+        return t.history(period='10y', interval=tf, timeout=1.5)
+
+# --- CORE STRICT ALGORITHM ENGINE ---
+def scan_zones(ticker, tf, mode, max_base, min_leg, min_size_threshold):
     try:
-        if tf in ["6mo", "12mo"]:
-            raw_data = yf.Ticker(ticker).history(period='15y', interval='1mo')
-            if len(raw_data) < 12: return None
-            raw_data['Year'] = raw_data.index.year
-            if tf == "6mo":
-                raw_data['Half'] = (raw_data.index.month - 1) // 6
-                df = raw_data.groupby(['Year', 'Half']).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
-                df.index = [pd.Timestamp(year=y, month=1 if h==0 else 7, day=1) for y, h in df.index]
-            else:
-                df = raw_data.groupby('Year').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
-                df.index = [pd.Timestamp(year=y, month=1, day=1) for y in df.index]
-        else:
-            df = yf.Ticker(ticker).history(period='10y', interval=tf)
-            if len(df) < 15: return None
+        df = fetch_and_resample(ticker, tf)
+        if df is None or len(df) < 20: return None
+        
+        current_price = round(df['Close'].iloc[-1], 2)
         
         df['Body'] = (df['Close'] - df['Open']).abs()
         df['Range'] = df['High'] - df['Low']
+        df['Range'] = np.where(df['Range'] == 0, 0.0001, df['Range'])
         
-        # 1. STRICT BORING CANDLE RULE (Body strictly < 50% of Range)
-        df['Is_Base'] = df['Body'] < (0.5 * df['Range'])
+        df['Body_Pct'] = (df['Body'] / df['Range']) * 100.0
         
-        # 2. Pre-Calculate Strong Leg-Out Candles based on Min & Max body percentages
-        min_body_req = (min_leg_pct / 100.0) * df['Range']
-        max_body_req = (max_leg_pct / 100.0) * df['Range']
+        # 1. Base rule strictly enforced
+        df['Is_Base'] = df['Body_Pct'] < 50.0
         
+        # 2. Leg-Out rule mathematically sealed
+        ratio_threshold = float(min_size_threshold)
         if mode == "Bullish Demand Zone":
-            df['Is_Strong'] = (df['Close'] > df['Open']) & (df['Body'] >= min_body_req) & (df['Body'] <= max_body_req)
+            df['Is_Strong'] = (df['Close'] > df['Open']) & (df['Body_Pct'] >= ratio_threshold)
         else:
-            df['Is_Strong'] = (df['Close'] < df['Open']) & (df['Body'] >= min_body_req) & (df['Body'] <= max_body_req)
+            df['Is_Strong'] = (df['Close'] < df['Open']) & (df['Body_Pct'] >= ratio_threshold)
             
         matches = []
-        
         i = 1
-        # Left-to-Right Sequential Scanner
-        while i < len(df) - min_leg:
+        while i < len(df) - min_leg - 1:
             if df['Is_Base'].iloc[i]:
                 base_start = i
                 base_end = i
                 
-                # Count consecutive boring candles
                 while base_end + 1 < len(df) and df['Is_Base'].iloc[base_end + 1]:
                     base_end += 1
                 
                 base_count = base_end - base_start + 1
                 
-                # If base count is within allowed limit
                 if base_count <= max_base:
                     legout_start = base_end + 1
                     legout_count = 0
                     
-                    # Count consecutive explosive leg-out candles
+                    # Strictly count consecutive strong leg-outs
                     while legout_start + legout_count < len(df) and df['Is_Strong'].iloc[legout_start + legout_count]:
                         legout_count += 1
                         
-                    # Check if actual leg-outs fall perfectly within your Min and Max slider setting
-                    if min_leg <= legout_count <= max_leg:
-                        leg_in_idx = base_start - 1
+                    # HARD ENFORCEMENT OF LEG-OUT COUNT
+                    if legout_count >= min_leg:
+                        future_data = df.iloc[legout_start + legout_count :]
                         
-                        if leg_in_idx >= 0:
-                            base_opens = df['Open'].iloc[base_start : base_end + 1]
-                            base_closes = df['Close'].iloc[base_start : base_end + 1]
-                            base_lows = df['Low'].iloc[base_start : base_end + 1]
-                            base_highs = df['High'].iloc[base_start : base_end + 1]
+                        if mode == "Bullish Demand Zone":
+                            z_ceil = round(max(df['Open'].iloc[base_start : base_end + 1].max(), df['Close'].iloc[base_start : base_end + 1].max()), 2)
+                            z_floor = round(df['Low'].iloc[base_start : base_end + 1].min(), 2)
                             
-                            if mode == "Bullish Demand Zone":
-                                leg_in_bullish = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
-                                pattern = "RBR 🚀" if leg_in_bullish else "DBR 📉🚀"
-                                
-                                z_ceil = round(max(base_opens.max(), base_closes.max()), 2)
-                                z_floor = round(base_lows.min(), 2)
-                                
-                                future_data = df.iloc[legout_start + legout_count :]
-                                status = "Fresh 🟢"
-                                if not future_data.empty and future_data['Low'].min() <= z_ceil:
-                                    status = "Mitigated/Tested 🟡"
-                                    
+                            if future_data.empty:
+                                state = "Unmitigated 🟢"
                             else:
-                                leg_in_bearish = df['Close'].iloc[leg_in_idx] < df['Open'].iloc[leg_in_idx]
-                                pattern = "DBD 🩸" if leg_in_bearish else "RBD 🚀🩸"
+                                lowest_since = future_data['Low'].min()
+                                if lowest_since < z_floor:
+                                    state = "Mitigated 🔴"
+                                elif lowest_since <= z_ceil:
+                                    candles_in_zone = ((future_data['Low'] <= z_ceil) & (future_data['High'] >= z_floor)).sum()
+                                    if 2 <= candles_in_zone <= 3:
+                                        state = "In the Zone (2-3 Candles) 🟡"
+                                    else:
+                                        state = "Mitigated 🔴"
+                                else:
+                                    state = "Unmitigated 🟢"
+                                    
+                            if state == "Unmitigated 🟢" and (z_ceil < current_price <= z_ceil * 1.015):
+                                proximity = "Just Approaching 🎯"
+                            elif "In the Zone" in state:
+                                proximity = "Inside Zone ⚡"
+                            else:
+                                proximity = "Normal"
                                 
-                                z_ceil = round(base_highs.max(), 2)
-                                z_floor = round(min(base_opens.min(), base_closes.min()), 2)
-                                
-                                future_data = df.iloc[legout_start + legout_count :]
-                                status = "Fresh 🟢"
-                                if not future_data.empty and future_data['High'].max() >= z_floor:
-                                    status = "Mitigated/Tested 🟡"
-
-                            date_detected = df.index[legout_start].strftime('%Y-%m-%d') if hasattr(df.index[legout_start], 'strftime') else str(df.index[legout_start])
+                        else: # Bearish Supply Zone
+                            z_ceil = round(df['High'].iloc[base_start : base_end + 1].max(), 2)
+                            z_floor = round(min(df['Open'].iloc[base_start : base_end + 1].min(), df['Close'].iloc[base_start : base_end + 1].min()), 2)
                             
-                            matches.append({
-                                "Ticker": ticker.replace('.NS', ''),
-                                "Date Detected": date_detected,
-                                "Zone Status": status,
-                                "Exact Pattern": pattern,
-                                "Base Candles": base_count,
-                                "Leg-Outs": legout_count,
-                                "Ceiling (Proximal)": z_ceil,
-                                "Floor (Distal)": z_floor
-                            })
-                # Skip forward past this base to continue scanning correctly
-                i = base_end + 1
+                            if future_data.empty:
+                                state = "Unmitigated 🟢"
+                            else:
+                                highest_since = future_data['High'].max()
+                                if highest_since > z_ceil:
+                                    state = "Mitigated 🔴"
+                                elif highest_since >= z_floor:
+                                    candles_in_zone = ((future_data['High'] >= z_floor) & (future_data['Low'] <= z_ceil)).sum()
+                                    if 2 <= candles_in_zone <= 3:
+                                        state = "In the Zone (2-3 Candles) 🟡"
+                                    else:
+                                        state = "Mitigated 🔴"
+                                else:
+                                    state = "Unmitigated 🟢"
+                                    
+                            if state == "Unmitigated 🟢" and (z_floor * 0.985 <= current_price < z_floor):
+                                proximity = "Just Approaching 🎯"
+                            elif "In the Zone" in state:
+                                proximity = "Inside Zone ⚡"
+                            else:
+                                proximity = "Normal"
+
+                        date_detected = df.index[legout_start].strftime('%Y-%m-%d %H:%M') if hasattr(df.index[legout_start], 'strftime') else str(df.index[legout_start])
+                        first_legout_pct = df['Body_Pct'].iloc[legout_start]
+                        
+                        matches.append({
+                            "Ticker": ticker.replace('.NS', ''),
+                            "Formation Date": date_detected,
+                            "Leg-Out Count": legout_count,
+                            "Leg-Out Strength": f"{round(first_legout_pct, 1)}%",
+                            "Base": base_count,
+                            "Proximal (Ceiling)": z_ceil,
+                            "Distal (Floor)": z_floor,
+                            "Current Price": current_price,
+                            "Zone State": state,
+                            "Live Alignment": proximity
+                        })
+                # Skip to the end of the leg-out to prevent redundant counting
+                i = legout_start + legout_count
             else:
                 i += 1
-                
         return matches
     except Exception:
         return None
 
-# --- RUN BUTTON ---
-if st.button("🔍 Execute Advanced Scan", type="primary", use_container_width=True):
+# --- SCANNER RUNNER EXECUTION ---
+if st.button("🔍 Run Institutional Alignment Scan", type="primary", use_container_width=True):
     results = []
-    bar = st.progress(0, text="Initializing Scanner...")
+    
+    progress_bar = st.progress(0, text="Initializing network data streams...")
+    total_symbols = len(symbols_to_scan)
     
     for idx, ticker in enumerate(symbols_to_scan):
-        bar.progress((idx + 1) / len(symbols_to_scan), text=f"Scanning {ticker}...")
-        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, min_leg_pct, max_leg_pct)
-        if res: results.extend(res)
+        progress_bar.progress((idx + 1) / total_symbols, text=f"Analyzing {ticker} Structure ({idx+1}/{total_symbols})...")
+        time.sleep(0.01)
+        
+        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, min_legout_size_pct)
+        if res:
+            results.extend(res)
             
-    bar.empty()
+    progress_bar.empty()
     
     if results:
-        # Sort Latest to Oldest
         df_display = pd.DataFrame(results)
-        df_display['Date Detected'] = pd.to_datetime(df_display['Date Detected'])
-        df_display = df_display.sort_values(by="Date Detected", ascending=False)
-        df_display['Date Detected'] = df_display['Date Detected'].dt.strftime('%Y-%m-%d')
+        df_display = df_display.sort_values(by="Formation Date", ascending=False).drop_duplicates(subset=["Ticker"], keep="first")
         
-        # Display Metrics
-        col1, col2 = st.columns(2)
-        col1.success(f"🎯 Found **{len(df_display)}** Institutional Zones.")
-        col2.info(f"🟢 **{len(df_display[df_display['Zone Status'] == 'Fresh 🟢'])}** Zones are Fresh.")
-        
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+        if state_filter == "Just Approaching (Nearing Edge)":
+            df_display = df_display[df_display['Live Alignment'] == "Just Approaching 🎯"]
+        elif state_filter == "In the Zone (2-3 Candles Formed)":
+            df_display = df_display[df_display['Zone State'] == "In the Zone (2-3 Candles) 🟡"]
+        elif state_filter == "Unmitigated (100% Completely Fresh)":
+            df_display = df_display[df_display['Zone State'] == "Unmitigated 🟢"]
+        else:
+            df_display = df_display[df_display['Zone State'] != "Mitigated 🔴"]
+            
+        if df_display.empty:
+            st.warning("No institutional zones matched your exact state filter conditions at this moment.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"<div class='metric-card'><b>Total Formations:</b><br><span style='font-size:24px;'>{len(df_display)}</span></div>", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"<div class='metric-card' style='border-left-color:#00E676;'><b>100% Unmitigated:</b><br><span style='font-size:24px;'>{len(df_display[df_display['Zone State'] == 'Unmitigated 🟢'])}</span></div>", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"<div class='metric-card' style='border-left-color:#FFD600;'><b>Active Plays:</b><br><span style='font-size:24px;'>{len(df_display[df_display['Live Alignment'] != 'Normal'])}</span></div>", unsafe_allow_html=True)
+                
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            def highlight_live_state(val):
+                if "Approaching" in str(val): return 'background-color: #1B5E20; color: white;'
+                if "Inside" in str(val): return 'background-color: #E65100; color: white;'
+                return ''
+                
+            st.dataframe(
+                df_display.style.map(highlight_live_state, subset=['Live Alignment']),
+                use_container_width=True,
+                hide_index=True
+            )
     else:
-        st.warning("No patterns found matching these strict institutional criteria.")
+        st.warning("No institutional setups detected matching these core settings within the selected market segment.")
