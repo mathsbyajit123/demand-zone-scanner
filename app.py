@@ -36,7 +36,7 @@ def load_all_nse_segments():
     segments["NIFTY Smallcap 250"] = format_tickers("https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv")
     segments["Full NIFTY 500"] = format_tickers("https://archives.nseindia.com/content/indices/ind_nifty500list.csv")
     
-    fallback = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS", "SBIN.NS", "ITC.NS", "HINDALCO.NS"]
+    fallback = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS", "SBIN.NS", "ITC.NS"]
     for k in list(segments.keys()):
         if not segments[k]:
             segments[k] = fallback
@@ -78,34 +78,30 @@ with st.sidebar:
     st.divider()
     st.markdown("### 🕯️ Advanced Candle Strictness")
     base_limit = st.slider("Max Base Candles Allowed", 1, 6, 4)
-    min_legout = st.slider("Min Leg-Out Candles Required", 1, 4, 2)
+    min_legout = st.slider("Min Leg-Out Candles Required", 1, 4, 1)
     min_legout_size_pct = st.slider("Minimum Leg-Out Candle Body Size (%)", 51, 100, 55)
 
 base_list = all_segments[market_segment]
 symbols_to_scan = base_list[:5] if "Quick Test" in scan_range else base_list
 
-# --- FLAWLESS INTRADAY RESAMPLING ENGINE ---
+# --- RESAMPLING ENGINE FOR 75M & 125M ---
 def fetch_and_resample(ticker, tf):
     t = yf.Ticker(ticker)
     if tf == "15m":
         return t.history(period='60d', interval='15m', timeout=1.5)
-    elif tf in ["75m", "125m"]:
-        # Safe Date-Isolated Grouping to prevent Overnight Gap blending
-        base_interval = '15m' if tf == "75m" else '5m'
-        group_size = 5 if tf == "75m" else 25
-        
-        raw = t.history(period='60d', interval=base_interval, timeout=1.5)
-        if len(raw) < group_size: return None
-        
-        raw['Date'] = raw.index.date
-        raw['block'] = raw.groupby('Date').cumcount() // group_size
-        
-        df = raw.groupby(['Date', 'block']).agg({
-            'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'
-        })
-        
-        # Reconstruct the index properly
-        df.index = raw.groupby(['Date', 'block']).apply(lambda x: x.index[0])
+    elif tf == "75m":
+        raw = t.history(period='60d', interval='15m', timeout=1.5)
+        if len(raw) < 5: return None
+        raw['group'] = np.arange(len(raw)) // 5
+        df = raw.groupby('group').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
+        df.index = raw.index[::5][:len(df)]
+        return df
+    elif tf == "125m":
+        raw = t.history(period='60d', interval='5m', timeout=1.5)
+        if len(raw) < 25: return None
+        raw['group'] = np.arange(len(raw)) // 25
+        df = raw.groupby('group').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last', 'Volume':'sum'})
+        df.index = raw.index[::25][:len(df)]
         return df
     elif tf in ["1d", "1wk"]:
         return t.history(period='3y', interval=tf, timeout=1.5)
@@ -126,15 +122,12 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, min_size_threshold):
         
         df['Body_Pct'] = (df['Body'] / df['Range']) * 100.0
         
-        # 1. Base rule strictly enforced
         df['Is_Base'] = df['Body_Pct'] < 50.0
         
-        # 2. Leg-Out rule mathematically sealed
-        ratio_threshold = float(min_size_threshold)
         if mode == "Bullish Demand Zone":
-            df['Is_Strong'] = (df['Close'] > df['Open']) & (df['Body_Pct'] >= ratio_threshold)
+            df['Is_Strong'] = (df['Close'] > df['Open']) & (df['Body_Pct'] >= float(min_size_threshold))
         else:
-            df['Is_Strong'] = (df['Close'] < df['Open']) & (df['Body_Pct'] >= ratio_threshold)
+            df['Is_Strong'] = (df['Close'] < df['Open']) & (df['Body_Pct'] >= float(min_size_threshold))
             
         matches = []
         i = 1
@@ -152,11 +145,12 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, min_size_threshold):
                     legout_start = base_end + 1
                     legout_count = 0
                     
-                    # Strictly count consecutive strong leg-outs
                     while legout_start + legout_count < len(df) and df['Is_Strong'].iloc[legout_start + legout_count]:
+                        actual_body_pct = df['Body_Pct'].iloc[legout_start + legout_count]
+                        if actual_body_pct < min_size_threshold:
+                            break 
                         legout_count += 1
                         
-                    # HARD ENFORCEMENT OF LEG-OUT COUNT
                     if legout_count >= min_leg:
                         future_data = df.iloc[legout_start + legout_count :]
                         
@@ -215,6 +209,7 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, min_size_threshold):
                         date_detected = df.index[legout_start].strftime('%Y-%m-%d %H:%M') if hasattr(df.index[legout_start], 'strftime') else str(df.index[legout_start])
                         first_legout_pct = df['Body_Pct'].iloc[legout_start]
                         
+                        # NEW COLUMN ADDED HERE
                         matches.append({
                             "Ticker": ticker.replace('.NS', ''),
                             "Formation Date": date_detected,
@@ -227,8 +222,7 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, min_size_threshold):
                             "Zone State": state,
                             "Live Alignment": proximity
                         })
-                # Skip to the end of the leg-out to prevent redundant counting
-                i = legout_start + legout_count
+                i = base_end + 1
             else:
                 i += 1
         return matches
