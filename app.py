@@ -6,7 +6,7 @@ import numpy as np
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Institutional Zone Scanner Pro", layout="wide")
 
-# --- TICKER REGISTRY (Added NIFTY 100) ---
+# --- TICKER REGISTRY ---
 TICKERS = {
     "NIFTY 50": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'SBI.NS', 'ITC.NS', 'AXISBANK.NS', 'LT.NS', 'KOTAKBANK.NS'],
     "NIFTY 100": ['ADANIENT.NS', 'BAJFINANCE.NS', 'HAL.NS', 'DMART.NS', 'CHOLAFIN.NS', 'PIDILITIND.NS', 'BEL.NS', 'BAJAJ-AUTO.NS', 'SIEMENS.NS', 'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS'],
@@ -15,7 +15,7 @@ TICKERS = {
     "NIFTY 500 (Top Sectoral)": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'TRENT.NS', 'ZOMATO.NS', 'SUZLON.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS', 'NTPC.NS', 'ONGC.NS']
 }
 
-# --- ADVANCED TIMEFRAME RESAMPLER (Added 3mo Quarterly) ---
+# --- ADVANCED TIMEFRAME RESAMPLER ---
 def get_resampled_data(ticker, timeframe_opt, lookback_years):
     period_map = {"3y": "3y", "5y": "5y", "10y": "10y"}
     p = period_map.get(lookback_years, "5y")
@@ -24,7 +24,6 @@ def get_resampled_data(ticker, timeframe_opt, lookback_years):
         df = yf.download(ticker, period=p, interval=timeframe_opt, progress=False)
         return df
         
-    # Download monthly data and aggregate manually for 3M/6M/12M macro horizons
     df = yf.download(ticker, period=p, interval='1mo', progress=False)
     if df.empty:
         return df
@@ -73,7 +72,6 @@ def process_zones(df, min_base, max_base, min_legout_pct):
         if not leg_in['Is_Exciting']:
             continue
             
-        # Only check base candle lengths between the user's Min and Max choice
         for b_count in range(min_base, max_base + 1):
             if i + 1 + b_count >= len(df):
                 continue
@@ -147,11 +145,9 @@ tf_choice = st.sidebar.selectbox("Candlestick Interval", ['1d', '1wk', '1mo', '3
 lookback_choice = st.sidebar.selectbox("Data Set History", ['3y', '5y', '10y'], index=1)
 
 st.sidebar.subheader("Zone Sizing Restrictions")
-# Replaced dual-slider with explicit Min and Max selections (1 to 6)
 min_base = st.sidebar.selectbox("Minimum Base Candles", [1, 2, 3, 4, 5, 6], index=0)
 max_base = st.sidebar.selectbox("Maximum Base Candles", [1, 2, 3, 4, 5, 6], index=1)
 
-# Safety check: if user sets min higher than max, swap them automatically
 if min_base > max_base:
     min_base, max_base = max_base, min_base
 
@@ -204,8 +200,9 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
                 return 'background-color: #d4edda; color: #155724; font-weight: bold;'
             return 'color: #6c757d;'
 
+        # FIX: Changed 'applymap' to 'map' to support the newest version of Pandas
         st.dataframe(
-            output_df.style.applymap(render_visual_states, subset=['Zone Status']), 
+            output_df.style.map(render_visual_states, subset=['Zone Status']), 
             use_container_width=True
         )
     else:
