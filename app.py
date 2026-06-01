@@ -1,162 +1,211 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import datetime
+import numpy as np
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Pro Demand Zone Scanner", layout="wide")
+st.set_page_config(page_title="Institutional Zone Scanner Pro", layout="wide")
 
-# --- TICKER LISTS (Expandable) ---
+# --- TICKER REGISTRY (Nifty 50, 500, Midcap, Smallcap Samples - Expandable) ---
 TICKERS = {
-    "NIFTY 50": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'SBI.NS', 'BHARTIARTL.NS', 'ITC.NS'],
-    "NIFTY MIDCAP": ['VOLTAS.NS', 'TRENT.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'MRF.NS', 'POLYCAB.NS'],
-    "NIFTY SMALLCAP": ['SUZLON.NS', 'IRFC.NS', 'ZOMATO.NS', 'RVNL.NS', 'BSE.NS'],
+    "NIFTY 50": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'SBI.NS', 'ITC.NS', 'AXISBANK.NS', 'LT.NS', 'KOTAKBANK.NS'],
+    "NIFTY MIDCAP 100": ['VOLTAS.NS', 'TRENT.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'AUBANK.NS', 'BANDHANBNK.NS', 'ESCORT.NS', 'DIXON.NS', 'COFORGE.NS', 'MAXHEALTH.NS'],
+    "NIFTY SMALLCAP 250": ['SUZLON.NS', 'IRFC.NS', 'ZOMATO.NS', 'RVNL.NS', 'BSE.NS', 'HUDCO.NS', 'IFCI.NS', 'CENTURYPLY.NS', 'RITES.NS', 'SJVN.NS'],
+    "NIFTY 500 (Top Sectoral)': ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'TRENT.NS', 'ZOMATO.NS', 'SUZLON.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS', 'NTPC.NS', 'ONGC.NS']
 }
-# To keep the app fast, we are using top stocks. You can paste all 500 Nifty tickers here later!
 
-# --- DEMAND ZONE LOGIC ---
-def check_mitigation(df, zone_end_idx, proximal, distal):
-    future_data = df.iloc[zone_end_idx + 1:]
-    if future_data.empty:
-        return "Fresh (Unmitigated)"
+# --- ADVANCED TIMEFRAME RESAMPLER ---
+def get_resampled_data(ticker, timeframe_opt, lookback_years):
+    period_map = {"3y": "3y", "5y": "5y", "10y": "10y"}
+    p = period_map.get(lookback_years, "5y")
     
-    min_future_low = future_data['Low'].min()
-    current_price = df['Close'].iloc[-1]
-    
-    if min_future_low < distal:
-        return "Zone Broken"
-    elif min_future_low <= proximal:
-        return "Mitigated (Tested)"
+    if timeframe_opt in ['1d', '1wk', '1mo']:
+        df = yf.download(ticker, period=p, interval=timeframe_opt, progress=False)
+        return df
+        
+    # For custom long timeframes, download monthly and resample
+    df = yf.download(ticker, period=p, interval='1mo', progress=False)
+    if df.empty:
+        return df
+        
+    if timeframe_opt == '6mo':
+        rule = '6ME'
+    elif timeframe_opt == '12mo':
+        rule = '12ME'
     else:
-        # Check if approaching
-        distance = (current_price - proximal) / proximal
-        if distance <= 0.05 and distance > 0:
-            return "Approaching Zone (Near 5%)"
-        return "Fresh (Unmitigated)"
+        return df
+        
+    # Resample logic to build macro candles
+    resampled = df.resample(rule).agg({
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last',
+        'Volume': 'sum'
+    }).dropna()
+    return resampled
 
-def find_demand_zones(df, min_base, max_base, min_legout_size):
-    if df.empty or len(df) < (2 + max_base):
+# --- MATRIX TRACKING ENGINE ---
+def process_zones(df, min_base, max_base, min_legout_pct):
+    if df.empty or len(df) < 5:
         return []
+        
+    # Force single index columns if multi-index occurs
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
-    safe_range = df['Range'].replace(0, 0.001)
+    safe_range = np.where(df['Range'] == 0, 0.001, df['Range'])
     
-    # Calculate sizes and types
     df['Body_Pct'] = (df['Body'] / safe_range) * 100
     df['Is_Boring'] = df['Body_Pct'] <= 50
     df['Is_Exciting'] = df['Body_Pct'] > 50
     df['Is_Bullish'] = df['Close'] > df['Open']
     
-    zones = []
+    detected_zones = []
+    current_price = float(df['Close'].iloc[-1])
+    current_low = float(df['Low'].iloc[-1])
     
-    # Scan logic
-    for i in range(len(df) - 3 - max_base):
+    # Loop through historical bars
+    for i in range(len(df) - 4):
         leg_in = df.iloc[i]
-        
         if not leg_in['Is_Exciting']:
             continue
             
-        # Try different base lengths
-        for b in range(min_base, max_base + 1):
-            base_candles = df.iloc[i+1 : i+1+b]
-            
-            # All base candles must be boring
-            if not all(base_candles['Is_Boring']):
+        for b_count in range(min_base, max_base + 1):
+            if i + 1 + b_count >= len(df):
                 continue
                 
-            leg_out_1 = df.iloc[i+1+b]
-            leg_out_2 = df.iloc[i+2+b]
+            base_sequence = df.iloc[i+1 : i+1+b_count]
+            if not all(base_sequence['Is_Boring']):
+                continue
+                
+            # Count how many consecutive legouts follow
+            legout_idx = i + 1 + b_count
+            legout_count = 0
+            legout_pcts = []
             
-            # Leg outs must be exciting, bullish, and meet size criteria
-            if (leg_out_1['Is_Exciting'] and leg_out_1['Is_Bullish'] and leg_out_1['Body_Pct'] >= min_legout_size and
-                leg_out_2['Is_Exciting'] and leg_out_2['Is_Bullish'] and leg_out_2['Body_Pct'] >= min_legout_size):
+            while legout_idx < len(df):
+                cand = df.iloc[legout_idx]
+                if cand['Is_Exciting'] and cand['Is_Bullish'] and cand['Body_Pct'] >= min_legout_pct:
+                    legout_count += 1
+                    legout_pcts.append(cand['Body_Pct'])
+                    legout_idx += 1
+                else:
+                    break
+            
+            # Condition met: At least 2 verified legouts
+            if legout_count >= 2:
+                proximal = float(max(base_sequence['Open'].max(), base_sequence['Close'].max()))
+                distal = float(base_sequence['Low'].min())
                 
-                proximal = max(base_candles[['Open', 'Close']].max())
-                distal = base_candles['Low'].min()
+                # Analyze everything that happened after this zone configuration ended
+                post_zone_df = df.iloc[i + 1 + b_count + legout_count:]
                 
-                # Check what happened after the zone
-                status = check_mitigation(df, i+2+b, proximal, distal)
+                if post_zone_df.empty:
+                    status = "Fresh (Unmitigated)"
+                else:
+                    historical_min_low = float(post_zone_df['Low'].min())
+                    if historical_min_low < distal:
+                        status = "Zone Broken"
+                    elif historical_min_low <= proximal:
+                        status = "Mitigated (Tested)"
+                    else:
+                        status = "Fresh (Unmitigated)"
                 
-                # Only keep active/useful zones
+                # Real-time state classification based on CURRENT candle values
                 if status != "Zone Broken":
-                    zones.append({
+                    if current_low <= proximal and current_low >= distal:
+                        status = "Just Touched / In the Zone"
+                    elif current_price > proximal and (current_price - proximal) / proximal <= 0.03:
+                        status = "Just Approached (Within 3%)"
+                        
+                    avg_legout_size = sum(legout_pcts) / len(legout_pcts) if legout_pcts else 0
+                    
+                    detected_zones.append({
                         'Date Formed': df.index[i+1].strftime('%Y-%m-%d'),
-                        'Base Candles': b,
+                        'Base Candles': int(b_count),
+                        'Leg-Out Candles': int(legout_count),
+                        'Avg Leg-Out Body %': f"{round(avg_legout_size, 1)}%",
                         'Proximal (Entry)': round(proximal, 2),
-                        'Distal (Stop)': round(distal, 2),
-                        'Status': status,
-                        'Current Price': round(df['Close'].iloc[-1], 2)
+                        'Distal (Stop Loss)': round(distal, 2),
+                        'Current Price': round(current_price, 2),
+                        'Zone Status': status
                     })
-                break # Move to next pattern once found
+                break
                 
-    return zones
+    return detected_zones
 
-# --- APP UI ---
-st.title("📊 Institutional Demand Zone Scanner")
-st.markdown("Scan the Indian market for Leg-in ➡️ Boring Base ➡️ Leg-outs.")
+# --- USER INTERFACE ---
+st.title("⚡ Structural Supply & Demand Zone Engine")
+st.markdown("Automated algorithmic tracking engine for structural market imbalances.")
 
-# SIDEBAR CONTROLS
-st.sidebar.header("⚙️ Scanner Settings")
+# SIDEBAR ARCHITECTURE
+st.sidebar.header("🎯 Scanner Filter Controls")
+index_choice = st.sidebar.selectbox("Market Index Group", list(TICKERS.keys()))
 
-selected_sector = st.sidebar.selectbox("Select Index/Sector", ["All Combined"] + list(TICKERS.keys()))
+st.sidebar.subheader("Time Horizon Matrix")
+tf_choice = st.sidebar.selectbox("Candlestick Interval", ['1d', '1wk', '1mo', '6mo', '12mo'], index=0)
+lookback_choice = st.sidebar.selectbox("Data Set History", ['3y', '5y', '10y'], index=1)
 
-st.sidebar.subheader("Time & Data")
-timeframe = st.sidebar.selectbox("Timeframe", ['1d (Daily)', '1wk (Weekly)', '1mo (Monthly)', '3mo (Quarterly)'])
-tf_map = {'1d (Daily)': '1d', '1wk (Weekly)': '1wk', '1mo (Monthly)': '1mo', '3mo (Quarterly)': '3mo'}
+st.sidebar.subheader("Zone Sizing Restrictions")
+base_slider = st.sidebar.slider("Number of Base Candles", 1, 6, (1, 2))
+min_legout_slider = st.sidebar.slider("Minimum Leg-Out Body Power (%)", 51, 100, 55)
 
-lookback = st.sidebar.selectbox("Data Lookback", ['1y', '2y', '3y', '5y', '10y'], index=2) # Default 3 years
+st.sidebar.subheader("Filter Status Output")
+status_filters = st.sidebar.multiselect(
+    "Include Status States", 
+    ["Fresh (Unmitigated)", "Just Approached (Within 3%)", "Just Touched / In the Zone", "Mitigated (Tested)"],
+    default=["Fresh (Unmitigated)", "Just Approached (Within 3%)", "Just Touched / In the Zone"]
+)
 
-st.sidebar.subheader("Candle Rules")
-base_range = st.sidebar.slider("Number of Base Candles", min_value=1, max_value=6, value=(1, 3))
-min_legout = st.sidebar.slider("Min Leg-out Body Size (%)", min_value=51, max_value=100, value=60)
-
-# EXECUTE SCAN
-if st.button("🚀 Start Professional Scan", type="primary"):
+# EXECUTION CONSOLE
+if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
+    selected_tickers = TICKERS[index_choice]
+    compiled_results = []
     
-    # Determine tickers to scan
-    scan_list = []
-    if selected_sector == "All Combined":
-        for lst in TICKERS.values():
-            scan_list.extend(lst)
-    else:
-        scan_list = TICKERS[selected_sector]
-        
-    results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    prog_bar = st.progress(0)
+    status_msg = st.empty()
     
-    for idx, ticker in enumerate(scan_list):
-        status_text.text(f"Scanning: {ticker}...")
+    for tracking_idx, symbol in enumerate(selected_tickers):
+        status_msg.text(f"Processing structural matrix profiles for: {symbol}")
         try:
-            data = yf.download(ticker, period=lookback, interval=tf_map[timeframe], progress=False)
-            zones = find_demand_zones(data, base_range[0], base_range[1], min_legout)
+            historical_data = get_resampled_data(symbol, tf_choice, lookback_choice)
+            discovered_zones = process_zones(historical_data, base_slider[0], base_slider[1], min_legout_slider)
             
-            for z in zones:
-                z['Ticker'] = ticker.replace('.NS', '')
-                results.append(z)
-        except Exception as e:
+            for zone_data in discovered_zones:
+                zone_data['Ticker'] = symbol.replace('.NS', '')
+                # Filter down matching target states
+                if zone_data['Zone Status'] in status_filters:
+                    compiled_results.append(zone_data)
+        except Exception as system_err:
             pass
-            
-        progress_bar.progress((idx + 1) / len(scan_list))
+        prog_bar.progress((tracking_idx + 1) / len(selected_tickers))
         
-    status_text.text("Scan Complete!")
+    status_msg.text("Scanning protocol concluded.")
     
-    # DISPLAY RESULTS
-    if results:
-        df_results = pd.DataFrame(results)
-        # Reorder columns for better reading
-        df_results = df_results[['Ticker', 'Status', 'Current Price', 'Proximal (Entry)', 'Distal (Stop)', 'Date Formed', 'Base Candles']]
+    # RENDER METRIC GRID
+    if compiled_results:
+        output_df = pd.DataFrame(compiled_results)
+        # Re-arrange columns beautifully
+        output_df = output_df[['Ticker', 'Zone Status', 'Current Price', 'Proximal (Entry)', 'Distal (Stop Loss)', 'Date Formed', 'Base Candles', 'Leg-Out Candles', 'Avg Leg-Out Body %']]
         
-        st.success(f"Found {len(df_results)} Active Demand Zones!")
+        st.success(f"Discovered {len(output_df)} structural setup configurations matching parameters!")
         
-        # Color coding the status column
-        def color_status(val):
-            if 'Fresh' in val: return 'background-color: #d4edda; color: green'
-            elif 'Approaching' in val: return 'background-color: #fff3cd; color: orange'
-            elif 'Mitigated' in val: return 'background-color: #e2e3e5; color: gray'
-            return ''
-            
-        st.dataframe(df_results.style.applymap(color_status, subset=['Status']), use_container_width=True)
+        # Color Map Decorator
+        def render_visual_states(cell_value):
+            if "In the Zone" in cell_value:
+                return 'background-color: #f8d7da; color: #721c24; font-weight: bold; border-left: 4px solid red;'
+            elif "Approached" in cell_value:
+                return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
+            elif "Fresh" in cell_value:
+                return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            return 'color: #6c757d;'
+
+        st.dataframe(
+            output_df.style.applymap(render_visual_states, subset=['Zone Status']), 
+            use_container_width=True
+        )
     else:
-        st.warning("No un-broken Demand Zones found with these exact settings. Try adjusting your candle rules.")
+        st.warning("No dynamic structural supply/demand footprints tracked with current filter metrics.")
