@@ -15,7 +15,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">⚡ Elite Institutional Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Advanced Supply & Demand algorithmic filtering across NIFTY 500.</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Strict Boring Candle (<50%) & Advanced Supply/Demand algorithmic filtering across NIFTY 500.</p>', unsafe_allow_html=True)
 
 # --- LOAD NIFTY 500 ---
 @st.cache_data
@@ -35,102 +35,128 @@ with st.sidebar:
     scan_mode = st.radio("Scan Range", ["Test Scan (10 Stocks)", "Full NIFTY 500"])
     
     st.divider()
-    
     timeframe = st.selectbox("⏳ Timeframe", ["1d", "1wk", "1mo", "3mo", "6mo", "12mo"])
     zone_type = st.selectbox("📈 Zone Type", ["Bullish Demand Zone", "Bearish Supply Zone"])
     
     st.divider()
     st.markdown("### 🕯️ Candle Strictness")
     base_limit = st.slider("Max Base Candles Allowed", 1, 6, 5)
-    num_legout = st.slider("Required Leg-Out Candles", 1, 3, 2)
-    legout_strength = st.slider("Min Leg-Out Body Size (%)", 50, 90, 50)
+    
+    min_legout, max_legout = st.slider("Leg-Out Candles (Min - Max)", 1, 6, (1, 3))
+    
+    # NEW: Min/Max slider for Leg-out body size (51% to 100%)
+    min_leg_pct, max_leg_pct = st.slider("Leg-Out Body Size (%)", 51, 100, (60, 100), help="Minimum and maximum body percentage for an explosive leg-out.")
 
 symbols_to_scan = nifty500_list[:10] if "Test" in scan_mode else nifty500_list
 
 # --- CORE ALGORITHM ---
-def scan_zones(ticker, tf, mode, max_base, leg_count, leg_pct):
+def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, min_leg_pct, max_leg_pct):
     try:
-        # Custom Timeframes (6M, 12M)
         if tf in ["6mo", "12mo"]:
             raw_data = yf.Ticker(ticker).history(period='15y', interval='1mo')
             if len(raw_data) < 12: return None
-            months_to_merge = 6 if tf == "6mo" else 12
-            raw_data = raw_data.iloc[::-1].copy() 
-            raw_data['group'] = np.arange(len(raw_data)) // months_to_merge
-            df = raw_data.groupby('group').agg({'Open': 'last', 'High': 'max', 'Low': 'min', 'Close': 'first'}).iloc[::-1]
-            df.index = raw_data.groupby('group').apply(lambda x: x.index.min()).iloc[::-1]
+            raw_data['Year'] = raw_data.index.year
+            if tf == "6mo":
+                raw_data['Half'] = (raw_data.index.month - 1) // 6
+                df = raw_data.groupby(['Year', 'Half']).agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
+                df.index = [pd.Timestamp(year=y, month=1 if h==0 else 7, day=1) for y, h in df.index]
+            else:
+                df = raw_data.groupby('Year').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'})
+                df.index = [pd.Timestamp(year=y, month=1, day=1) for y in df.index]
         else:
-            df = yf.Ticker(ticker).history(period='3y', interval=tf)
+            df = yf.Ticker(ticker).history(period='10y', interval=tf)
             if len(df) < 15: return None
         
         df['Body'] = (df['Close'] - df['Open']).abs()
         df['Range'] = df['High'] - df['Low']
         
-        # Base condition: Body < 50%
+        # 1. STRICT BORING CANDLE RULE (Body strictly < 50% of Range)
         df['Is_Base'] = df['Body'] < (0.5 * df['Range'])
+        
+        # 2. Pre-Calculate Strong Leg-Out Candles based on Min & Max body percentages
+        min_body_req = (min_leg_pct / 100.0) * df['Range']
+        max_body_req = (max_leg_pct / 100.0) * df['Range']
+        
+        if mode == "Bullish Demand Zone":
+            df['Is_Strong'] = (df['Close'] > df['Open']) & (df['Body'] >= min_body_req) & (df['Body'] <= max_body_req)
+        else:
+            df['Is_Strong'] = (df['Close'] < df['Open']) & (df['Body'] >= min_body_req) & (df['Body'] <= max_body_req)
+            
         matches = []
         
-        # Loop through chart
-        for i in range(5, len(df) - leg_count):
-            
-            # 1. Check Leg-Out validity based on user input
-            legout_valid = True
-            for k in range(1, leg_count + 1):
-                idx = i + k
-                body_ratio = (leg_pct / 100.0) * df['Range'].iloc[idx]
-                if mode == "Bullish Demand Zone":
-                    if not (df['Close'].iloc[idx] > df['Open'].iloc[idx] and df['Body'].iloc[idx] >= body_ratio):
-                        legout_valid = False; break
-                else:
-                    if not (df['Close'].iloc[idx] < df['Open'].iloc[idx] and df['Body'].iloc[idx] >= body_ratio):
-                        legout_valid = False; break
-            
-            if not legout_valid: continue
-            
-            # 2. Count Base Candles backwards
-            base_count = 0
-            for check_idx in range(i, i - max_base - 1, -1):
-                if df['Is_Base'].iloc[check_idx]: base_count += 1
-                else: break
+        i = 1
+        # Left-to-Right Sequential Scanner
+        while i < len(df) - min_leg:
+            if df['Is_Base'].iloc[i]:
+                base_start = i
+                base_end = i
                 
-            if 1 <= base_count <= max_base:
-                leg_in_idx = i - base_count
+                # Count consecutive boring candles
+                while base_end + 1 < len(df) and df['Is_Base'].iloc[base_end + 1]:
+                    base_end += 1
                 
-                # 3. Identify Pattern & Calculate Zone Prices
-                if mode == "Bullish Demand Zone":
-                    leg_in_bullish = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
-                    pattern = "RBR (Rally-Base-Rally) 🚀" if leg_in_bullish else "DBR (Drop-Base-Rally) 📉🚀"
-                    z_ceil = round(df['Close'].iloc[i-base_count+1 : i+1].max(), 2)
-                    z_floor = round(df['Low'].iloc[i-base_count+1 : i+1].min(), 2)
+                base_count = base_end - base_start + 1
+                
+                # If base count is within allowed limit
+                if base_count <= max_base:
+                    legout_start = base_end + 1
+                    legout_count = 0
                     
-                    # Check if tested
-                    future_data = df.iloc[i + leg_count + 1 :]
-                    status = "Fresh 🟢"
-                    if not future_data.empty and future_data['Low'].min() <= z_ceil:
-                        status = "Mitigated/Tested 🟡"
+                    # Count consecutive explosive leg-out candles
+                    while legout_start + legout_count < len(df) and df['Is_Strong'].iloc[legout_start + legout_count]:
+                        legout_count += 1
                         
-                else:
-                    leg_in_bearish = df['Close'].iloc[leg_in_idx] < df['Open'].iloc[leg_in_idx]
-                    pattern = "DBD (Drop-Base-Drop) 🩸" if leg_in_bearish else "RBD (Rally-Base-Drop) 🚀🩸"
-                    z_ceil = round(df['High'].iloc[i-base_count+1 : i+1].max(), 2)
-                    z_floor = round(df['Close'].iloc[i-base_count+1 : i+1].min(), 2)
-                    
-                    # Check if tested
-                    future_data = df.iloc[i + leg_count + 1 :]
-                    status = "Fresh 🟢"
-                    if not future_data.empty and future_data['High'].max() >= z_floor:
-                        status = "Mitigated/Tested 🟡"
+                    # Check if actual leg-outs fall perfectly within your Min and Max slider setting
+                    if min_leg <= legout_count <= max_leg:
+                        leg_in_idx = base_start - 1
+                        
+                        if leg_in_idx >= 0:
+                            base_opens = df['Open'].iloc[base_start : base_end + 1]
+                            base_closes = df['Close'].iloc[base_start : base_end + 1]
+                            base_lows = df['Low'].iloc[base_start : base_end + 1]
+                            base_highs = df['High'].iloc[base_start : base_end + 1]
+                            
+                            if mode == "Bullish Demand Zone":
+                                leg_in_bullish = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
+                                pattern = "RBR 🚀" if leg_in_bullish else "DBR 📉🚀"
+                                
+                                z_ceil = round(max(base_opens.max(), base_closes.max()), 2)
+                                z_floor = round(base_lows.min(), 2)
+                                
+                                future_data = df.iloc[legout_start + legout_count :]
+                                status = "Fresh 🟢"
+                                if not future_data.empty and future_data['Low'].min() <= z_ceil:
+                                    status = "Mitigated/Tested 🟡"
+                                    
+                            else:
+                                leg_in_bearish = df['Close'].iloc[leg_in_idx] < df['Open'].iloc[leg_in_idx]
+                                pattern = "DBD 🩸" if leg_in_bearish else "RBD 🚀🩸"
+                                
+                                z_ceil = round(base_highs.max(), 2)
+                                z_floor = round(min(base_opens.min(), base_closes.min()), 2)
+                                
+                                future_data = df.iloc[legout_start + legout_count :]
+                                status = "Fresh 🟢"
+                                if not future_data.empty and future_data['High'].max() >= z_floor:
+                                    status = "Mitigated/Tested 🟡"
 
-                matches.append({
-                    "Ticker": ticker.replace('.NS', ''),
-                    "Date Detected": df.index[i + leg_count].strftime('%Y-%m-%d') if hasattr(df.index[i+leg_count], 'strftime') else str(df.index[i+leg_count]),
-                    "Zone Status": status,
-                    "Exact Pattern": pattern,
-                    "Base Candles": base_count,
-                    "Leg-Outs": leg_count,
-                    "Ceiling": z_ceil,
-                    "Floor": z_floor
-                })
+                            date_detected = df.index[legout_start].strftime('%Y-%m-%d') if hasattr(df.index[legout_start], 'strftime') else str(df.index[legout_start])
+                            
+                            matches.append({
+                                "Ticker": ticker.replace('.NS', ''),
+                                "Date Detected": date_detected,
+                                "Zone Status": status,
+                                "Exact Pattern": pattern,
+                                "Base Candles": base_count,
+                                "Leg-Outs": legout_count,
+                                "Ceiling (Proximal)": z_ceil,
+                                "Floor (Distal)": z_floor
+                            })
+                # Skip forward past this base to continue scanning correctly
+                i = base_end + 1
+            else:
+                i += 1
+                
         return matches
     except Exception:
         return None
@@ -142,7 +168,7 @@ if st.button("🔍 Execute Advanced Scan", type="primary", use_container_width=T
     
     for idx, ticker in enumerate(symbols_to_scan):
         bar.progress((idx + 1) / len(symbols_to_scan), text=f"Scanning {ticker}...")
-        res = scan_zones(ticker, timeframe, zone_type, base_limit, num_legout, legout_strength)
+        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, min_leg_pct, max_leg_pct)
         if res: results.extend(res)
             
     bar.empty()
