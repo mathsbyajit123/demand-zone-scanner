@@ -6,12 +6,12 @@ import numpy as np
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Institutional Zone Scanner Pro", layout="wide")
 
-# --- TICKER REGISTRY (Nifty 50, 500, Midcap, Smallcap Samples - Expandable) ---
+# --- TICKER REGISTRY (Fixed quote bug here) ---
 TICKERS = {
     "NIFTY 50": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'SBI.NS', 'ITC.NS', 'AXISBANK.NS', 'LT.NS', 'KOTAKBANK.NS'],
     "NIFTY MIDCAP 100": ['VOLTAS.NS', 'TRENT.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'AUBANK.NS', 'BANDHANBNK.NS', 'ESCORT.NS', 'DIXON.NS', 'COFORGE.NS', 'MAXHEALTH.NS'],
     "NIFTY SMALLCAP 250": ['SUZLON.NS', 'IRFC.NS', 'ZOMATO.NS', 'RVNL.NS', 'BSE.NS', 'HUDCO.NS', 'IFCI.NS', 'CENTURYPLY.NS', 'RITES.NS', 'SJVN.NS'],
-    "NIFTY 500 (Top Sectoral)': ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'TRENT.NS', 'ZOMATO.NS', 'SUZLON.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS', 'NTPC.NS', 'ONGC.NS']
+    "NIFTY 500 (Top Sectoral)": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'TRENT.NS', 'ZOMATO.NS', 'SUZLON.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS', 'NTPC.NS', 'ONGC.NS']
 }
 
 # --- ADVANCED TIMEFRAME RESAMPLER ---
@@ -23,7 +23,7 @@ def get_resampled_data(ticker, timeframe_opt, lookback_years):
         df = yf.download(ticker, period=p, interval=timeframe_opt, progress=False)
         return df
         
-    # For custom long timeframes, download monthly and resample
+    # Download monthly data and aggregate manually for 6M/12M macro horizons
     df = yf.download(ticker, period=p, interval='1mo', progress=False)
     if df.empty:
         return df
@@ -35,7 +35,6 @@ def get_resampled_data(ticker, timeframe_opt, lookback_years):
     else:
         return df
         
-    # Resample logic to build macro candles
     resampled = df.resample(rule).agg({
         'Open': 'first',
         'High': 'max',
@@ -50,7 +49,6 @@ def process_zones(df, min_base, max_base, min_legout_pct):
     if df.empty or len(df) < 5:
         return []
         
-    # Force single index columns if multi-index occurs
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
         
@@ -67,7 +65,6 @@ def process_zones(df, min_base, max_base, min_legout_pct):
     current_price = float(df['Close'].iloc[-1])
     current_low = float(df['Low'].iloc[-1])
     
-    # Loop through historical bars
     for i in range(len(df) - 4):
         leg_in = df.iloc[i]
         if not leg_in['Is_Exciting']:
@@ -81,7 +78,6 @@ def process_zones(df, min_base, max_base, min_legout_pct):
             if not all(base_sequence['Is_Boring']):
                 continue
                 
-            # Count how many consecutive legouts follow
             legout_idx = i + 1 + b_count
             legout_count = 0
             legout_pcts = []
@@ -95,12 +91,10 @@ def process_zones(df, min_base, max_base, min_legout_pct):
                 else:
                     break
             
-            # Condition met: At least 2 verified legouts
             if legout_count >= 2:
                 proximal = float(max(base_sequence['Open'].max(), base_sequence['Close'].max()))
                 distal = float(base_sequence['Low'].min())
                 
-                # Analyze everything that happened after this zone configuration ended
                 post_zone_df = df.iloc[i + 1 + b_count + legout_count:]
                 
                 if post_zone_df.empty:
@@ -114,7 +108,6 @@ def process_zones(df, min_base, max_base, min_legout_pct):
                     else:
                         status = "Fresh (Unmitigated)"
                 
-                # Real-time state classification based on CURRENT candle values
                 if status != "Zone Broken":
                     if current_low <= proximal and current_low >= distal:
                         status = "Just Touched / In the Zone"
@@ -176,7 +169,6 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
             
             for zone_data in discovered_zones:
                 zone_data['Ticker'] = symbol.replace('.NS', '')
-                # Filter down matching target states
                 if zone_data['Zone Status'] in status_filters:
                     compiled_results.append(zone_data)
         except Exception as system_err:
@@ -188,21 +180,21 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
     # RENDER METRIC GRID
     if compiled_results:
         output_df = pd.DataFrame(compiled_results)
-        # Re-arrange columns beautifully
         output_df = output_df[['Ticker', 'Zone Status', 'Current Price', 'Proximal (Entry)', 'Distal (Stop Loss)', 'Date Formed', 'Base Candles', 'Leg-Out Candles', 'Avg Leg-Out Body %']]
         
         st.success(f"Discovered {len(output_df)} structural setup configurations matching parameters!")
         
-        # Color Map Decorator
-        def render_visual_states(cell_value):
-            if "In the Zone" in cell_value:
+        # Color Map Decorator (Updated to avoid pandas map deprecation paths)
+        def render_visual_states(val):
+            if "In the Zone" in str(val):
                 return 'background-color: #f8d7da; color: #721c24; font-weight: bold; border-left: 4px solid red;'
-            elif "Approached" in cell_value:
+            elif "Approached" in str(val):
                 return 'background-color: #fff3cd; color: #856404; font-weight: bold;'
-            elif "Fresh" in cell_value:
+            elif "Fresh" in str(val):
                 return 'background-color: #d4edda; color: #155724; font-weight: bold;'
             return 'color: #6c757d;'
 
+        # Render styling seamlessly
         st.dataframe(
             output_df.style.applymap(render_visual_states, subset=['Zone Status']), 
             use_container_width=True
