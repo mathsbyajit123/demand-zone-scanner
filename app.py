@@ -6,15 +6,16 @@ import numpy as np
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Institutional Zone Scanner Pro", layout="wide")
 
-# --- TICKER REGISTRY (Fixed quote bug here) ---
+# --- TICKER REGISTRY (Added NIFTY 100) ---
 TICKERS = {
     "NIFTY 50": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS', 'SBI.NS', 'ITC.NS', 'AXISBANK.NS', 'LT.NS', 'KOTAKBANK.NS'],
+    "NIFTY 100": ['ADANIENT.NS', 'BAJFINANCE.NS', 'HAL.NS', 'DMART.NS', 'CHOLAFIN.NS', 'PIDILITIND.NS', 'BEL.NS', 'BAJAJ-AUTO.NS', 'SIEMENS.NS', 'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS'],
     "NIFTY MIDCAP 100": ['VOLTAS.NS', 'TRENT.NS', 'FEDERALBNK.NS', 'IDFCFIRSTB.NS', 'AUBANK.NS', 'BANDHANBNK.NS', 'ESCORT.NS', 'DIXON.NS', 'COFORGE.NS', 'MAXHEALTH.NS'],
     "NIFTY SMALLCAP 250": ['SUZLON.NS', 'IRFC.NS', 'ZOMATO.NS', 'RVNL.NS', 'BSE.NS', 'HUDCO.NS', 'IFCI.NS', 'CENTURYPLY.NS', 'RITES.NS', 'SJVN.NS'],
     "NIFTY 500 (Top Sectoral)": ['RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'TRENT.NS', 'ZOMATO.NS', 'SUZLON.NS', 'TATAMOTORS.NS', 'SUNPHARMA.NS', 'NTPC.NS', 'ONGC.NS']
 }
 
-# --- ADVANCED TIMEFRAME RESAMPLER ---
+# --- ADVANCED TIMEFRAME RESAMPLER (Added 3mo Quarterly) ---
 def get_resampled_data(ticker, timeframe_opt, lookback_years):
     period_map = {"3y": "3y", "5y": "5y", "10y": "10y"}
     p = period_map.get(lookback_years, "5y")
@@ -23,12 +24,14 @@ def get_resampled_data(ticker, timeframe_opt, lookback_years):
         df = yf.download(ticker, period=p, interval=timeframe_opt, progress=False)
         return df
         
-    # Download monthly data and aggregate manually for 6M/12M macro horizons
+    # Download monthly data and aggregate manually for 3M/6M/12M macro horizons
     df = yf.download(ticker, period=p, interval='1mo', progress=False)
     if df.empty:
         return df
         
-    if timeframe_opt == '6mo':
+    if timeframe_opt == '3mo':
+        rule = '3ME'
+    elif timeframe_opt == '6mo':
         rule = '6ME'
     elif timeframe_opt == '12mo':
         rule = '12ME'
@@ -70,6 +73,7 @@ def process_zones(df, min_base, max_base, min_legout_pct):
         if not leg_in['Is_Exciting']:
             continue
             
+        # Only check base candle lengths between the user's Min and Max choice
         for b_count in range(min_base, max_base + 1):
             if i + 1 + b_count >= len(df):
                 continue
@@ -139,11 +143,18 @@ st.sidebar.header("🎯 Scanner Filter Controls")
 index_choice = st.sidebar.selectbox("Market Index Group", list(TICKERS.keys()))
 
 st.sidebar.subheader("Time Horizon Matrix")
-tf_choice = st.sidebar.selectbox("Candlestick Interval", ['1d', '1wk', '1mo', '6mo', '12mo'], index=0)
+tf_choice = st.sidebar.selectbox("Candlestick Interval", ['1d', '1wk', '1mo', '3mo', '6mo', '12mo'], index=0)
 lookback_choice = st.sidebar.selectbox("Data Set History", ['3y', '5y', '10y'], index=1)
 
 st.sidebar.subheader("Zone Sizing Restrictions")
-base_slider = st.sidebar.slider("Number of Base Candles", 1, 6, (1, 2))
+# Replaced dual-slider with explicit Min and Max selections (1 to 6)
+min_base = st.sidebar.selectbox("Minimum Base Candles", [1, 2, 3, 4, 5, 6], index=0)
+max_base = st.sidebar.selectbox("Maximum Base Candles", [1, 2, 3, 4, 5, 6], index=1)
+
+# Safety check: if user sets min higher than max, swap them automatically
+if min_base > max_base:
+    min_base, max_base = max_base, min_base
+
 min_legout_slider = st.sidebar.slider("Minimum Leg-Out Body Power (%)", 51, 100, 55)
 
 st.sidebar.subheader("Filter Status Output")
@@ -165,7 +176,7 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
         status_msg.text(f"Processing structural matrix profiles for: {symbol}")
         try:
             historical_data = get_resampled_data(symbol, tf_choice, lookback_choice)
-            discovered_zones = process_zones(historical_data, base_slider[0], base_slider[1], min_legout_slider)
+            discovered_zones = process_zones(historical_data, min_base, max_base, min_legout_slider)
             
             for zone_data in discovered_zones:
                 zone_data['Ticker'] = symbol.replace('.NS', '')
@@ -184,7 +195,6 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
         
         st.success(f"Discovered {len(output_df)} structural setup configurations matching parameters!")
         
-        # Color Map Decorator (Updated to avoid pandas map deprecation paths)
         def render_visual_states(val):
             if "In the Zone" in str(val):
                 return 'background-color: #f8d7da; color: #721c24; font-weight: bold; border-left: 4px solid red;'
@@ -194,7 +204,6 @@ if st.button("🔍 Run Algorithmic Market Scan", type="primary"):
                 return 'background-color: #d4edda; color: #155724; font-weight: bold;'
             return 'color: #6c757d;'
 
-        # Render styling seamlessly
         st.dataframe(
             output_df.style.applymap(render_visual_states, subset=['Zone Status']), 
             use_container_width=True
