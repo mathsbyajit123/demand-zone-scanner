@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from scipy.signal import argrelextrema
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Human-Eye Price Action Scanner", layout="wide", page_icon="👁️")
@@ -14,7 +15,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">👁️ Human-Eye Price Action Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans for visual zones, role reversals (Res->Supp), and Trendline Breakouts.</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Uses Pivot Clustering to see zones exactly like a human trader.</p>', unsafe_allow_html=True)
 
 # --- LOAD SYMBOLS ---
 @st.cache_data(ttl=86400)
@@ -29,7 +30,7 @@ def load_symbols(index_name):
         df = pd.read_csv(urls[index_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "CIPLA.NS"]
+        return ["RELIANCE.NS", "TCS.NS", "CIPLA.NS", "INFY.NS", "ICICIBANK.NS"]
 
 # --- DATA FETCHING ---
 @st.cache_data(show_spinner=False)
@@ -48,7 +49,7 @@ def resample_data(df, timeframe):
     elif timeframe == '12mo': return df.resample('YE').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
     return df
 
-# --- SIMPLE HUMAN UI ---
+# --- UI SETTINGS ---
 with st.sidebar:
     st.header("1. Choose Market")
     index_choice = st.selectbox("Index", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Midcap 100", "NIFTY Smallcap 250", "NIFTY 500"])
@@ -69,7 +70,7 @@ with st.sidebar:
     ])
     
     st.divider()
-    zone_thickness = st.slider("Zone Thickness (1=Thin Line, 5=Thick Band)", 1, 5, 2)
+    zone_thickness = st.slider("Zone Thickness Tolerance (%)", 0.5, 5.0, 2.0, help="Groups swing highs/lows that are within this % of each other into a single thick zone.")
     run_scan = st.button("🚀 EXECUTE SCAN", type="primary", use_container_width=True)
 
 if "Test" in index_choice:
@@ -77,99 +78,94 @@ if "Test" in index_choice:
 else:
     symbols_to_scan = load_symbols(index_choice)
 
-# --- CORE LOGIC (PRICE DENSITY) ---
-def analyze_price_action(df, hunt, thickness):
-    # Use last 150 candles for context
-    df_recent = df.tail(150)
+# --- CORE LOGIC (PIVOT CLUSTERING) ---
+def analyze_price_action(df, hunt, thickness_pct):
+    df_recent = df.tail(200)
     if len(df_recent) < 50: return None
     
-    latest = df_recent.iloc[-1]
-    prev = df_recent.iloc[-2]
+    latest_close = df_recent.iloc[-1]['Close']
+    latest_high = df_recent.iloc[-1]['High']
+    latest_low = df_recent.iloc[-1]['Low']
+    prev_close = df_recent.iloc[-2]['Close']
     
-    latest_close = latest['Close']
-    latest_high = latest['High']
-    latest_low = latest['Low']
-    
-    # Calculate strong closing candle
-    body = abs(latest_close - latest['Open'])
+    # Identify Momentum
+    body = abs(latest_close - df_recent.iloc[-1]['Open'])
     rng = latest_high - latest_low if latest_high != latest_low else 0.001
-    is_strong_green = (latest_close > latest['Open']) and (body / rng > 0.6)
-    is_strong_red = (latest_close < latest['Open']) and (body / rng > 0.6)
+    is_strong_green = (latest_close > df_recent.iloc[-1]['Open']) and (body / rng > 0.5)
+    is_strong_red = (latest_close < df_recent.iloc[-1]['Open']) and (body / rng > 0.5)
     
-    # Create Price Bins (Horizontal Bands) based on Thickness slider
-    max_p = df_recent['High'].max()
-    min_p = df_recent['Low'].min()
-    bin_size = (max_p - min_p) / (50 / thickness) # Thicker zones = fewer, wider bins
+    # 1. Find all structural Swing Highs and Swing Lows
+    peaks = df_recent.iloc[argrelextrema(df_recent['High'].values, np.greater_equal, order=5)[0]]['High'].values
+    valleys = df_recent.iloc[argrelextrema(df_recent['Low'].values, np.less_equal, order=5)[0]]['Low'].values
     
-    if bin_size == 0: return None
+    all_pivots = np.sort(np.concatenate((peaks, valleys)))
+    if len(all_pivots) == 0: return None
     
-    bins = np.arange(min_p, max_p + bin_size, bin_size)
+    # 2. Cluster Pivots into Zones
+    zones = []
+    current_zone = [all_pivots[0]]
     
-    # Count how many highs/lows touch each bin
-    hist, bin_edges = np.histogram(pd.concat([df_recent['High'], df_recent['Low']]), bins=bins)
-    
-    # Find the heavily touched zones (top 15% most touched areas)
-    threshold = np.percentile(hist, 85)
-    heavy_zones = []
-    
-    for i, count in enumerate(hist):
-        if count >= threshold:
-            heavy_zones.append({
-                'floor': bin_edges[i],
-                'ceiling': bin_edges[i+1],
-                'center': (bin_edges[i] + bin_edges[i+1]) / 2,
-                'touches': count
-            })
+    for i in range(1, len(all_pivots)):
+        # If the pivot is within the thickness % of the start of the zone, group it
+        if (all_pivots[i] - current_zone[0]) / current_zone[0] <= (thickness_pct / 100.0):
+            current_zone.append(all_pivots[i])
+        else:
+            # Must have at least 3 touches to be considered a major zone
+            if len(current_zone) >= 3:
+                zones.append({'floor': min(current_zone), 'ceiling': max(current_zone), 'center': sum(current_zone)/len(current_zone)})
+            current_zone = [all_pivots[i]]
             
-    # If no clear zones found, skip
-    if not heavy_zones: return None
+    if len(current_zone) >= 3:
+        zones.append({'floor': min(current_zone), 'ceiling': max(current_zone), 'center': sum(current_zone)/len(current_zone)})
+
+    if not zones: return None
     
-    # Evaluate against what the user is hunting
-    for zone in heavy_zones:
+    # 3. Evaluate the setup
+    for zone in zones:
         z_floor = zone['floor']
         z_ceil = zone['ceiling']
         z_center = zone['center']
         
-        # 1. RESISTANCE BECOMES SUPPORT (Like the CIPLA image)
+        # Count peak touches vs valley touches in this zone
+        zone_peaks = len([p for p in peaks if z_floor * 0.99 <= p <= z_ceil * 1.01])
+        zone_valleys = len([v for v in valleys if z_floor * 0.99 <= v <= z_ceil * 1.01])
+        
         if hunt == "Resistance becomes Support (Role Reversal)":
-            # Price must be above the zone currently
             if latest_close > z_ceil:
-                # The lowest wick of recent candles must be touching the zone (testing it)
-                if latest_low <= z_ceil * 1.01 and latest_low >= z_floor * 0.99:
-                    # Historically, most closes were BELOW this zone (acted as resistance)
-                    past_closes = df_recent.head(100)['Close']
-                    if len(past_closes[past_closes < z_floor]) > len(past_closes[past_closes > z_ceil]):
+                # Look at the last 5 candles. Did the wick dip into or near the zone ceiling?
+                recent_low = df_recent.tail(5)['Low'].min()
+                if z_floor * 0.98 <= recent_low <= z_ceil * 1.02: # 2% buffer for front-running
+                    # Was it heavily acting as Resistance before the breakout?
+                    if zone_peaks >= 2:
                         return f"Role Reversal at ₹{round(z_center, 2)} 🔄"
                         
-        # 2. BOUNCE OFF SUPPORT
         elif hunt == "Bounce off Heavy Support Zone":
-            if latest_close > z_ceil and latest_low <= (z_ceil * 1.015) and is_strong_green:
-                return f"Support Bounce at ₹{round(z_center, 2)} 🟢"
+            if latest_close > z_ceil and latest_low <= (z_ceil * 1.02) and is_strong_green:
+                if zone_valleys >= 2:
+                    return f"Support Bounce at ₹{round(z_center, 2)} 🟢"
                 
-        # 3. REJECTION AT RESISTANCE
         elif hunt == "Rejection at Heavy Resistance Zone":
-            if latest_close < z_floor and latest_high >= (z_floor * 0.985) and is_strong_red:
-                return f"Resistance Rejection at ₹{round(z_center, 2)} 🔴"
+            if latest_close < z_floor and latest_high >= (z_floor * 0.98) and is_strong_red:
+                if zone_peaks >= 2:
+                    return f"Resistance Rejection at ₹{round(z_center, 2)} 🔴"
                 
-        # 4. ZONE BREAKOUT (UP)
         elif hunt == "Strong Zone Breakout (Up)":
-            # Previous candle closed below zone, current closed above with strong momentum
-            if prev['Close'] < z_floor and latest_close > z_ceil and is_strong_green:
-                return f"Breakout Above ₹{round(z_ceil, 2)} 🚀"
+            if prev_close < z_floor and latest_close > z_ceil and is_strong_green:
+                if zone_peaks >= 2:
+                    return f"Breakout Above ₹{round(z_ceil, 2)} 🚀"
                 
-        # 5. ZONE BREAKDOWN (DOWN)
         elif hunt == "Strong Zone Breakdown (Down)":
-            if prev['Close'] > z_ceil and latest_close < z_floor and is_strong_red:
-                return f"Breakdown Below ₹{round(z_floor, 2)} 🩸"
+            if prev_close > z_ceil and latest_close < z_floor and is_strong_red:
+                if zone_valleys >= 2:
+                    return f"Breakdown Below ₹{round(z_floor, 2)} 🩸"
 
-    # 6. TRENDLINE BOUNCE (Simplified: 3 consecutive higher lows + bounce off 20 SMA)
     if hunt == "Trendline Bounce (Higher Lows)":
         df_recent['SMA_20'] = df_recent['Close'].rolling(20).mean()
         if len(df_recent) > 5:
             l1, l2, l3 = df_recent.iloc[-3]['Low'], df_recent.iloc[-2]['Low'], df_recent.iloc[-1]['Low']
             sma20 = df_recent.iloc[-1]['SMA_20']
             
-            if l3 > l2 > l1 and (abs(latest_low - sma20) / sma20 < 0.01) and is_strong_green:
+            if l3 > l2 > l1 and (abs(latest_low - sma20) / sma20 < 0.015) and is_strong_green:
                 return "Trendline / Dynamic Support Bounce 📈"
 
     return None
@@ -215,4 +211,4 @@ if run_scan:
         st.success(f"🎯 Scan Complete! Found **{len(df_display)}** setups.")
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks found matching '{hunt_type}' on the {timeframe} timeframe right now.")
+        st.warning(f"No stocks found matching '{hunt_type}' on the {timeframe} timeframe.")
