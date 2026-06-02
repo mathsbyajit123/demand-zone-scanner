@@ -15,7 +15,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">⚡ Elite Institutional Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Advanced Supply/Demand with Auto-Detected Break of Structure (BOS).</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Authentic Imbalances + Pivot Break (Swing Structure) Validation.</p>', unsafe_allow_html=True)
 
 # --- LOAD NIFTY SYMBOLS ---
 @st.cache_data
@@ -42,21 +42,24 @@ with st.sidebar:
     zone_type = st.selectbox("📈 Zone Type", ["Bullish Demand Zone", "Bearish Supply Zone"])
     
     st.divider()
-    st.markdown("### 🏛️ Structure & BOS Filters")
-    require_bos = st.checkbox("Require Break of Structure (BOS)", value=True, help="Auto-detects minor pullbacks during the leg-in/base and ensures the leg-out breaks them.")
+    st.markdown("### 🏛️ Pivot & Structure Rules")
+    require_pivot = st.checkbox("Require Pivot/Swing Break", value=True, help="Leg-Out rally MUST close past the previous structural turning point.")
+    pivot_lookback = st.slider("Pivot Lookback (Candles)", 5, 30, 15, help="How far back before the base to search for the highest/lowest pivot.")
+
+    st.divider()
+    st.markdown("### 🕯️ Imbalance (Authenticity)")
+    base_limit = st.slider("Max Base Candles", 1, 6, 4)
+    legout_range = st.slider("Min & Max Leg-Out Candles", 1, 5, (1, 3))
+    min_legout, max_legout = legout_range
+    exciting_pct = st.slider("Exciting Candle Body (%)", 50, 100, 60)
     
     st.divider()
-    st.markdown("### 🎯 Output Filters")
+    st.markdown("### 💼 Tradeable Rules")
+    max_risk_pct = st.slider("Max Zone Width / Risk (%)", 1, 15, 6)
+    
     status_filter = st.multiselect("Show Zones That Are:", 
                                    ["Fresh 🟢", "Approaching 🚶‍♂️", "In Zone (Consolidating) ⏳", "Mitigated/Tested 🟡"],
                                    default=["Fresh 🟢", "Approaching 🚶‍♂️", "In Zone (Consolidating) ⏳"])
-    
-    st.divider()
-    st.markdown("### 🕯️ Candle Strictness")
-    base_limit = st.slider("Max Base Candles Allowed", 1, 6, 5)
-    legout_range = st.slider("Min & Max Leg-Out Candles", 1, 5, (1, 3))
-    min_legout, max_legout = legout_range
-    legout_strength = st.slider("Min Leg-Out Body Size (%)", 50, 90, 50)
 
 if "NIFTY 50" in scan_mode and "Full" not in scan_mode:
     symbols_to_scan = load_symbols("NIFTY 50")
@@ -66,7 +69,7 @@ else:
     symbols_to_scan = load_symbols("NIFTY 500")[:10]
 
 # --- CORE ALGORITHM ---
-def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
+def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, exc_pct, max_risk, req_pivot, p_lookback):
     try:
         if tf in ["6mo", "12mo"]:
             raw_data = yf.Ticker(ticker).history(period='15y', interval='1mo')
@@ -83,20 +86,20 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
         df['Body'] = (df['Close'] - df['Open']).abs()
         df['Range'] = df['High'] - df['Low']
         df['Is_Base'] = df['Body'] < (0.5 * df['Range'])
+        df['Is_Exciting'] = df['Body'] >= (exc_pct / 100.0) * df['Range']
+        
         matches = []
         
         for i in range(5, len(df) - max_leg):
             
-            # 1. Count consecutive valid Leg-Out candles
+            # 1. Count consecutive EXCITING Leg-Out candles
             consecutive_legs = 0
             for k in range(1, max_leg + 1):
                 idx = i + k
-                body_ratio = (leg_pct / 100.0) * df['Range'].iloc[idx]
-                
                 if mode == "Bullish Demand Zone":
-                    valid_candle = (df['Close'].iloc[idx] > df['Open'].iloc[idx] and df['Body'].iloc[idx] >= body_ratio)
+                    valid_candle = (df['Close'].iloc[idx] > df['Open'].iloc[idx]) and df['Is_Exciting'].iloc[idx]
                 else:
-                    valid_candle = (df['Close'].iloc[idx] < df['Open'].iloc[idx] and df['Body'].iloc[idx] >= body_ratio)
+                    valid_candle = (df['Close'].iloc[idx] < df['Open'].iloc[idx]) and df['Is_Exciting'].iloc[idx]
                 
                 if valid_candle: consecutive_legs += 1
                 else: break 
@@ -111,41 +114,26 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
                 
             if 1 <= base_count <= max_base:
                 leg_in_idx = i - base_count
-                
-                # --- 3. AUTO-DETECT BREAK OF STRUCTURE (BOS) ---
                 final_legout_idx = i + consecutive_legs
                 final_legout_close = df['Close'].iloc[final_legout_idx]
                 
-                # We look at the leg-in (approx 10 candles prior) and the base itself
-                search_start = max(1, leg_in_idx - 10) 
+                # --- 3. PIVOT (SWING) BREAK LOGIC ---
+                lookback_start = max(0, leg_in_idx - p_lookback)
                 
                 if mode == "Bullish Demand Zone":
-                    # Look for any candle that took the HIGH of the previous candle
-                    swing_highs = []
-                    for c in range(search_start, i): # i is the first leg-out, so this stops at the last base candle
-                        if df['High'].iloc[c] > df['High'].iloc[c-1]:
-                            swing_highs.append(df['High'].iloc[c])
-                            
-                    # Target the highest structural pullback we found, otherwise use absolute high
-                    target_bos_level = max(swing_highs) if swing_highs else df['High'].iloc[search_start : i].max()
-                    bos_confirmed = final_legout_close > target_bos_level
-                    
+                    # Find highest peak before the base formed
+                    pivot_price = df['High'].iloc[lookback_start : leg_in_idx + 1].max()
+                    pivot_broken = final_legout_close > pivot_price
                 else:
-                    # Bearish Supply: Look for any candle that took the LOW of the previous candle
-                    swing_lows = []
-                    for c in range(search_start, i):
-                        if df['Low'].iloc[c] < df['Low'].iloc[c-1]:
-                            swing_lows.append(df['Low'].iloc[c])
-                            
-                    # Target the lowest structural pullback we found, otherwise use absolute low
-                    target_bos_level = min(swing_lows) if swing_lows else df['Low'].iloc[search_start : i].min()
-                    bos_confirmed = final_legout_close < target_bos_level
+                    # Find lowest valley before the base formed
+                    pivot_price = df['Low'].iloc[lookback_start : leg_in_idx + 1].min()
+                    pivot_broken = final_legout_close < pivot_price
                 
-                # Skip if BOS is required but didn't happen
-                if req_bos and not bos_confirmed:
+                # Skip if pivot break is required but failed
+                if req_pivot and not pivot_broken:
                     continue
 
-                # --- 4. IDENTIFY PATTERN & PRICES ---
+                # --- 4. IDENTIFY PATTERN & ZONE PRICES ---
                 if mode == "Bullish Demand Zone":
                     leg_in_bullish = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
                     pattern = "RBR 🚀" if leg_in_bullish else "DBR 📉🚀"
@@ -156,6 +144,8 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
                     pattern = "DBD 🩸" if leg_in_bearish else "RBD 🚀🩸"
                     z_ceil = round(df['High'].iloc[i-base_count+1 : i+1].max(), 2)
                     z_floor = round(df['Close'].iloc[i-base_count+1 : i+1].min(), 2)
+                    
+                zone_width_pct = ((z_ceil - z_floor) / z_floor) * 100
                     
                 # --- 5. ADVANCED STATUS CHECK ---
                 future_data = df.iloc[final_legout_idx + 1 :]
@@ -189,13 +179,20 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
 
                 if not any(filt in status for filt in status_filter):
                     continue
+                
+                # --- 6. AUTHENTICITY & TRADEABILITY GRADING ---
+                is_authentic = base_count <= 3
+                # Tradeable = Authentic + Not Mitigated + Zone Risk OK + Pivot Broken
+                is_tradeable = is_authentic and ("Mitigated" not in status) and (zone_width_pct <= max_risk) and pivot_broken
 
                 matches.append({
                     "Ticker": ticker.replace('.NS', ''),
-                    "Date Detected": df.index[final_legout_idx].strftime('%Y-%m-%d') if hasattr(df.index[final_legout_idx], 'strftime') else str(df.index[final_legout_idx]),
+                    "Date": df.index[final_legout_idx].strftime('%Y-%m-%d') if hasattr(df.index[final_legout_idx], 'strftime') else str(df.index[final_legout_idx]),
                     "Status": status,
-                    "Target BOS Broken": round(target_bos_level, 2), # Now shows you the exact price it auto-detected and broke!
-                    "Pattern": pattern,
+                    "Tradeable 🎯": "✅ Yes" if is_tradeable else "❌ No",
+                    "Authentic 💎": "✅ Yes" if is_authentic else "❌ No",
+                    "Pivot Broke": "✅" if pivot_broken else "❌",
+                    "Risk %": f"{round(zone_width_pct, 1)}%",
                     "Base": base_count,
                     "Legs": consecutive_legs,
                     "Ceiling": z_ceil,
@@ -212,21 +209,24 @@ if st.button("🔍 Execute Advanced Scan", type="primary", use_container_width=T
     
     for idx, ticker in enumerate(symbols_to_scan):
         bar.progress((idx + 1) / len(symbols_to_scan), text=f"Scanning {ticker}...")
-        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, legout_strength, require_bos)
+        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, exciting_pct, max_risk_pct, require_pivot, pivot_lookback)
         if res: results.extend(res)
             
     bar.empty()
     
     if results:
         df_display = pd.DataFrame(results)
-        df_display['Date Detected'] = pd.to_datetime(df_display['Date Detected'])
-        df_display = df_display.sort_values(by="Date Detected", ascending=False)
-        df_display['Date Detected'] = df_display['Date Detected'].dt.strftime('%Y-%m-%d')
+        df_display['Date'] = pd.to_datetime(df_display['Date'])
+        df_display = df_display.sort_values(by="Date", ascending=False)
+        df_display['Date'] = df_display['Date'].dt.strftime('%Y-%m-%d')
+        
+        authentic_count = len(df_display[df_display['Authentic 💎'] == '✅ Yes'])
+        tradeable_count = len(df_display[df_display['Tradeable 🎯'] == '✅ Yes'])
         
         col1, col2, col3 = st.columns(3)
         col1.success(f"🎯 Total Zones: **{len(df_display)}**")
-        col2.info(f"🟢 Fresh: **{len(df_display[df_display['Status'].str.contains('Fresh')])}**")
-        col3.warning(f"🏗️ BOS Confirmed: **{len(df_display)}**") # If it's on the list and checked, it passed the BOS rule
+        col2.info(f"💎 Authentic Imbalances: **{authentic_count}**")
+        col3.warning(f"💼 Ready to Trade: **{tradeable_count}**")
         
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
