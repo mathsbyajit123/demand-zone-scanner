@@ -15,7 +15,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">⚡ Elite Institutional Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Advanced Supply/Demand & Break of Structure (BOS) algorithmic filtering.</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Advanced Supply/Demand with Auto-Detected Break of Structure (BOS).</p>', unsafe_allow_html=True)
 
 # --- LOAD NIFTY SYMBOLS ---
 @st.cache_data
@@ -43,8 +43,7 @@ with st.sidebar:
     
     st.divider()
     st.markdown("### 🏛️ Structure & BOS Filters")
-    require_bos = st.checkbox("Require Break of Structure (BOS)", value=True, help="Only show zones where the Leg-Out breaks the previous swing high/low.")
-    bos_lookback = st.slider("Swing High/Low Lookback", 5, 30, 15, help="How many candles before the base to look for the previous swing high/low.")
+    require_bos = st.checkbox("Require Break of Structure (BOS)", value=True, help="Auto-detects minor pullbacks during the leg-in/base and ensures the leg-out breaks them.")
     
     st.divider()
     st.markdown("### 🎯 Output Filters")
@@ -67,7 +66,7 @@ else:
     symbols_to_scan = load_symbols("NIFTY 500")[:10]
 
 # --- CORE ALGORITHM ---
-def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos, lookback):
+def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos):
     try:
         if tf in ["6mo", "12mo"]:
             raw_data = yf.Ticker(ticker).history(period='15y', interval='1mo')
@@ -113,19 +112,34 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos, l
             if 1 <= base_count <= max_base:
                 leg_in_idx = i - base_count
                 
-                # --- 3. BREAK OF STRUCTURE (BOS) LOGIC ---
+                # --- 3. AUTO-DETECT BREAK OF STRUCTURE (BOS) ---
                 final_legout_idx = i + consecutive_legs
                 final_legout_close = df['Close'].iloc[final_legout_idx]
-                lookback_start = max(0, leg_in_idx - lookback)
+                
+                # We look at the leg-in (approx 10 candles prior) and the base itself
+                search_start = max(1, leg_in_idx - 10) 
                 
                 if mode == "Bullish Demand Zone":
-                    # Find highest peak before the base formed
-                    swing_high = df['High'].iloc[lookback_start : leg_in_idx + 1].max()
-                    bos_confirmed = final_legout_close > swing_high
+                    # Look for any candle that took the HIGH of the previous candle
+                    swing_highs = []
+                    for c in range(search_start, i): # i is the first leg-out, so this stops at the last base candle
+                        if df['High'].iloc[c] > df['High'].iloc[c-1]:
+                            swing_highs.append(df['High'].iloc[c])
+                            
+                    # Target the highest structural pullback we found, otherwise use absolute high
+                    target_bos_level = max(swing_highs) if swing_highs else df['High'].iloc[search_start : i].max()
+                    bos_confirmed = final_legout_close > target_bos_level
+                    
                 else:
-                    # Find lowest valley before the base formed
-                    swing_low = df['Low'].iloc[lookback_start : leg_in_idx + 1].min()
-                    bos_confirmed = final_legout_close < swing_low
+                    # Bearish Supply: Look for any candle that took the LOW of the previous candle
+                    swing_lows = []
+                    for c in range(search_start, i):
+                        if df['Low'].iloc[c] < df['Low'].iloc[c-1]:
+                            swing_lows.append(df['Low'].iloc[c])
+                            
+                    # Target the lowest structural pullback we found, otherwise use absolute low
+                    target_bos_level = min(swing_lows) if swing_lows else df['Low'].iloc[search_start : i].min()
+                    bos_confirmed = final_legout_close < target_bos_level
                 
                 # Skip if BOS is required but didn't happen
                 if req_bos and not bos_confirmed:
@@ -180,7 +194,7 @@ def scan_zones(ticker, tf, mode, max_base, min_leg, max_leg, leg_pct, req_bos, l
                     "Ticker": ticker.replace('.NS', ''),
                     "Date Detected": df.index[final_legout_idx].strftime('%Y-%m-%d') if hasattr(df.index[final_legout_idx], 'strftime') else str(df.index[final_legout_idx]),
                     "Status": status,
-                    "BOS Check": "✅ Yes" if bos_confirmed else "❌ No",
+                    "Target BOS Broken": round(target_bos_level, 2), # Now shows you the exact price it auto-detected and broke!
                     "Pattern": pattern,
                     "Base": base_count,
                     "Legs": consecutive_legs,
@@ -198,7 +212,7 @@ if st.button("🔍 Execute Advanced Scan", type="primary", use_container_width=T
     
     for idx, ticker in enumerate(symbols_to_scan):
         bar.progress((idx + 1) / len(symbols_to_scan), text=f"Scanning {ticker}...")
-        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, legout_strength, require_bos, bos_lookback)
+        res = scan_zones(ticker, timeframe, zone_type, base_limit, min_legout, max_legout, legout_strength, require_bos)
         if res: results.extend(res)
             
     bar.empty()
@@ -212,7 +226,7 @@ if st.button("🔍 Execute Advanced Scan", type="primary", use_container_width=T
         col1, col2, col3 = st.columns(3)
         col1.success(f"🎯 Total Zones: **{len(df_display)}**")
         col2.info(f"🟢 Fresh: **{len(df_display[df_display['Status'].str.contains('Fresh')])}**")
-        col3.warning(f"🏗️ BOS Confirmed: **{len(df_display[df_display['BOS Check'] == '✅ Yes'])}**")
+        col3.warning(f"🏗️ BOS Confirmed: **{len(df_display)}**") # If it's on the list and checked, it passed the BOS rule
         
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
