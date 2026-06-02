@@ -2,170 +2,179 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from scipy.signal import argrelextrema
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Institutional Setup Scanner", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Pro S&R Zone Scanner", layout="wide", page_icon="🧱")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 38px; font-weight: 800; color: #00C853; margin-bottom: 0px; }
+    .main-title { font-size: 38px; font-weight: 800; color: #FF9800; margin-bottom: 0px; }
     .sub-title { font-size: 16px; color: #607D8B; margin-bottom: 20px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">📈 Authentic SMC Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans for DBR, RBR, RBD, and DBD Authentic Institutional Zones.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🧱 Dynamic Support & Resistance Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Multi-timeframe pivot clustering with advanced price action status.</p>', unsafe_allow_html=True)
 
 # --- LOAD SYMBOLS ---
 @st.cache_data(ttl=86400)
 def load_symbols(index_name):
+    urls = {
+        "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+        "NIFTY Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
+        "NIFTY Smallcap 250": "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv",
+        "NIFTY 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    }
     try:
-        if index_name == "NIFTY 50":
-            url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
-        else:
-            url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-        df = pd.read_csv(url)
+        df = pd.read_csv(urls[index_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "TATAMOTORS.NS"]
+        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
 
-# --- FAST BULK DATA DOWNLOAD ---
+# --- DATA FETCHING ---
 @st.cache_data(show_spinner=False)
 def fetch_bulk_data(tickers, timeframe):
-    if timeframe in ['1mo', '3mo', '6mo', '12mo']:
-        data = yf.download(tickers, period='10y', interval='1mo', group_by='ticker', threads=True, progress=False)
-    elif timeframe == '1wk':
-        data = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', threads=True, progress=False)
-    else: 
-        data = yf.download(tickers, period='2y', interval='1d', group_by='ticker', threads=True, progress=False)
+    # Determine the lookback period based on Yahoo Finance limits
+    if timeframe == '15m':
+        period, interval = '60d', '15m'
+    elif timeframe == '1h':
+        period, interval = '730d', '1h'
+    elif timeframe in ['1d', '1wk']:
+        period, interval = '5y', timeframe
+    else: # 1mo, 3mo, 6mo, 12mo
+        period, interval = '10y', '1mo'
+        
+    data = yf.download(tickers, period=period, interval=interval, group_by='ticker', threads=True, progress=False)
     return data
 
 def resample_data(df, timeframe):
-    if timeframe == '3mo':
-        return df.resample('3ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    elif timeframe == '6mo':
-        return df.resample('6ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    elif timeframe == '12mo':
-        return df.resample('YE').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    if timeframe == '3mo': return df.resample('3ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    elif timeframe == '6mo': return df.resample('6ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    elif timeframe == '12mo': return df.resample('YE').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
     return df
+
+# --- S&R LOGIC ---
+def find_zones(df, zone_type, tolerance_pct, min_touches, max_touches, lookback=10):
+    if len(df) < lookback * 2: return []
+    
+    # 1. Find all Pivot Points
+    if zone_type == "Support":
+        pivots = df.iloc[argrelextrema(df['Low'].values, np.less_equal, order=lookback)[0]]['Low']
+    else:
+        pivots = df.iloc[argrelextrema(df['High'].values, np.greater_equal, order=lookback)[0]]['High']
+        
+    # 2. Cluster Pivots into Zones
+    zones = []
+    for price in pivots:
+        matched = False
+        for zone in zones:
+            # If price is within the tolerance % of the zone center, group it
+            if abs(price - zone['center']) / zone['center'] <= (tolerance_pct / 100):
+                zone['touches'] += 1
+                zone['ceiling'] = max(zone['ceiling'], price)
+                zone['floor'] = min(zone['floor'], price)
+                zone['center'] = (zone['ceiling'] + zone['floor']) / 2
+                matched = True
+                break
+        if not matched:
+            zones.append({'center': price, 'ceiling': price, 'floor': price, 'touches': 1})
+            
+    # 3. Filter by User Touch Constraints
+    return [z for z in zones if min_touches <= z['touches'] <= max_touches]
+
+def evaluate_status(df, zone, zone_type, proximity_pct):
+    latest = df.iloc[-1]
+    recent_candles = df.tail(3)
+    
+    close, high, low = latest['Close'], latest['High'], latest['Low']
+    body_size = abs(close - latest['Open'])
+    candle_range = high - low if high != low else 0.001
+    is_strong_candle = (body_size / candle_range) > 0.60 # Strong momentum closing candle
+    
+    floor, ceiling = zone['floor'], zone['ceiling']
+    
+    status = None
+    
+    # Check Breakouts / Breakdowns first
+    if zone_type == "Support":
+        if close < floor and is_strong_candle:
+            return "Support Broken 🚨"
+        
+        # Is it Inside?
+        if floor <= close <= ceiling:
+            return "In The Zone ⏳"
+            
+        # Is it Approaching? (Slightly above the zone)
+        if ceiling < low <= ceiling * (1 + (proximity_pct/100)):
+            return "Approaching 🚶‍♂️"
+            
+        # Did it Just React? (Recently touched the zone and bounced up)
+        touched_recently = any(recent_candles['Low'] <= ceiling)
+        if touched_recently and close > ceiling * (1 + (proximity_pct/100)):
+            return "Just Away (Reacted) 🚀"
+            
+    else: # Resistance
+        if close > ceiling and is_strong_candle:
+            return "Resistance Broken 🚨"
+            
+        # Is it Inside?
+        if floor <= close <= ceiling:
+            return "In The Zone ⏳"
+            
+        # Is it Approaching? (Slightly below the zone)
+        if floor > high >= floor * (1 - (proximity_pct/100)):
+            return "Approaching 🚶‍♂️"
+            
+        # Did it Just React? (Recently touched the zone and dropped)
+        touched_recently = any(recent_candles['High'] >= floor)
+        if touched_recently and close < floor * (1 - (proximity_pct/100)):
+            return "Just Away (Reacted) 🩸"
+
+    return status
 
 # --- SIDEBAR UI ---
 with st.sidebar:
-    st.header("1. Select Market")
-    scan_mode = st.radio("Universe", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY 500 (504 Stocks)"])
+    st.header("1. Market Selection")
+    index_choice = st.selectbox("Index Universe", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Midcap 100", "NIFTY Smallcap 250", "NIFTY 500"])
     
     st.divider()
     st.header("2. Strategy Settings")
-    timeframe = st.selectbox("Timeframe", ["1d", "1wk", "1mo", "3mo", "6mo", "12mo"])
-    zone_type = st.radio("Look For", ["Demand Zones (DBR / RBR)", "Supply Zones (RBD / DBD)"])
+    timeframe = st.selectbox("Timeframe", ["15m", "1h", "1d", "1wk", "1mo", "3mo", "6mo", "12mo"])
+    zone_type = st.radio("Look For", ["Support", "Resistance"])
     
     st.divider()
-    run_scan = st.button("🚀 SCAN MARKET NOW", type="primary", use_container_width=True)
+    st.header("3. Zone Rules")
+    touches = st.slider("Required Touches (Min - Max)", 2, 15, (3, 6))
+    zone_width = st.slider("Zone Clustering Tolerance (%)", 1.0, 5.0, 2.0, help="How close pivot points need to be to merge into a single zone.")
+    prox_dist = st.slider("Approaching Distance (%)", 0.5, 3.0, 1.5, help="Distance from zone to be considered 'Approaching'.")
+    
+    st.divider()
+    st.header("4. Output Filters")
+    status_filters = st.multiselect("Show Stocks That Are:", 
+                                   ["Approaching 🚶‍♂️", "In The Zone ⏳", "Just Away (Reacted) 🚀", "Just Away (Reacted) 🩸", "Support Broken 🚨", "Resistance Broken 🚨"],
+                                   default=["Approaching 🚶‍♂️", "In The Zone ⏳"])
+    
+    st.divider()
+    run_scan = st.button("🚀 EXECUTE SCAN", type="primary", use_container_width=True)
 
-if "NIFTY 50" in scan_mode and "500" not in scan_mode:
-    symbols_to_scan = load_symbols("NIFTY 50")
-elif "NIFTY 500" in scan_mode:
-    symbols_to_scan = load_symbols("NIFTY 500")
+if "Test" in index_choice:
+    symbols_to_scan = load_symbols("NIFTY 50")[:10]
 else:
-    symbols_to_scan = load_symbols("NIFTY 500")[:10]
+    symbols_to_scan = load_symbols(index_choice)
 
-# --- CORE ALGORITHM ---
-def process_stock(df, ticker, mode):
-    df['Body'] = (df['Close'] - df['Open']).abs()
-    df['Range'] = df['High'] - df['Low']
-    
-    # Base Candle: Body < 50% of range. Exciting Candle: Body >= 60% of range.
-    df['Is_Base'] = df['Body'] < (0.5 * df['Range'])
-    df['Is_Exciting'] = df['Body'] >= (0.6 * df['Range'])
-    
-    matches = []
-    
-    for i in range(10, len(df) - 1):
-        legout_idx = i + 1
-        
-        # 1. Check if we have an Explosive Leg-Out
-        if "Demand" in mode:
-            valid_legout = (df['Close'].iloc[legout_idx] > df['Open'].iloc[legout_idx]) and df['Is_Exciting'].iloc[legout_idx]
-        else:
-            valid_legout = (df['Close'].iloc[legout_idx] < df['Open'].iloc[legout_idx]) and df['Is_Exciting'].iloc[legout_idx]
-            
-        if not valid_legout: continue
-        
-        # 2. Check for 1 to 3 tight Base Candles
-        base_count = 0
-        for check_idx in range(i, i - 4, -1):
-            if df['Is_Base'].iloc[check_idx]: base_count += 1
-            else: break
-            
-        if 1 <= base_count <= 3:
-            leg_in_idx = i - base_count
-            
-            # AUTHENTICITY CHECK: The Leg-In must ALSO be an Exciting Candle
-            if not df['Is_Exciting'].iloc[leg_in_idx]: 
-                continue
-            
-            base_data = df.iloc[i-base_count+1 : i+1]
-            legin_data = df.iloc[leg_in_idx]
-            legout_data = df.iloc[legout_idx]
-            
-            # 3. Identify ALL 4 Patterns & Apply Exceptional Marking
-            if "Demand" in mode:
-                # Is the Leg-In a Drop (Red) or Rally (Green)?
-                if df['Close'].iloc[leg_in_idx] < df['Open'].iloc[leg_in_idx]:
-                    pattern = "Drop-Base-Rally (DBR) 📉⏸️🚀"
-                else:
-                    pattern = "Rally-Base-Rally (RBR) 🚀⏸️🚀"
-                
-                proximal = max(base_data['Open'].max(), base_data['Close'].max())
-                distal = min(legin_data['Low'], base_data['Low'].min(), legout_data['Low'])
-                
-                # Pivot Break Check
-                pivot_high = df['High'].iloc[max(0, leg_in_idx - 10) : leg_in_idx].max()
-                if df['Close'].iloc[legout_idx] <= pivot_high: continue
-                
-            else: 
-                # Is the Leg-In a Rally (Green) or Drop (Red)?
-                if df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]:
-                    pattern = "Rally-Base-Drop (RBD) 🚀⏸️🩸"
-                else:
-                    pattern = "Drop-Base-Drop (DBD) 🩸⏸️🩸"
-                
-                proximal = min(base_data['Open'].min(), base_data['Close'].min())
-                distal = max(legin_data['High'], base_data['High'].max(), legout_data['High'])
-                
-                # Pivot Break Check
-                pivot_low = df['Low'].iloc[max(0, leg_in_idx - 10) : leg_in_idx].min()
-                if df['Close'].iloc[legout_idx] >= pivot_low: continue
-
-            # 4. Remove Dead/Tested Zones
-            future_data = df.iloc[legout_idx + 1 :]
-            if not future_data.empty:
-                if "Demand" in mode and future_data['Low'].min() <= proximal: continue
-                elif "Supply" in mode and future_data['High'].max() >= proximal: continue
-            
-            matches.append({
-                "Ticker": ticker.replace('.NS', ''),
-                "Date Formed": df.index[legout_idx].strftime('%Y-%m-%d'),
-                "Pattern": pattern,
-                "Base Candles": base_count,
-                "Entry (Proximal)": round(proximal, 2),
-                "SL (Distal)": round(distal, 2),
-                "Status": "Fresh & Authentic 💎"
-            })
-    return matches
-
-# --- RUN EXECUTION ---
+# --- EXECUTION LOGIC ---
 if run_scan:
     results = []
     
-    with st.spinner(f"Downloading bulk data for {len(symbols_to_scan)} stocks... Please wait 15-30 seconds."):
+    with st.spinner(f"Downloading {timeframe} data for {len(symbols_to_scan)} stocks..."):
         raw_data = fetch_bulk_data(symbols_to_scan, timeframe)
     
-    bar = st.progress(0, text="Analyzing authentic order flow...")
+    bar = st.progress(0, text="Calculating multi-touch S&R Zones...")
     total = len(symbols_to_scan)
     
     for idx, ticker in enumerate(symbols_to_scan):
-        bar.progress((idx + 1) / total, text=f"Scanning {ticker}...")
+        bar.progress((idx + 1) / total, text=f"Analyzing {ticker}...")
         
         try:
             if total > 1: df = raw_data[ticker].dropna()
@@ -173,12 +182,26 @@ if run_scan:
                 
             if df.empty: continue
             
-            df = resample_data(df, timeframe)
-            if len(df) < 15: continue
-            
-            res = process_stock(df, ticker, zone_type)
-            if res: results.extend(res)
+            if timeframe in ['3mo', '6mo', '12mo']:
+                df = resample_data(df, timeframe)
                 
+            if len(df) < 20: continue
+            
+            # Find zones matching touch criteria
+            zones = find_zones(df, zone_type, zone_width, touches[0], touches[1])
+            
+            for zone in zones:
+                status = evaluate_status(df, zone, zone_type, prox_dist)
+                
+                if status and status in status_filters:
+                    results.append({
+                        "Ticker": ticker.replace('.NS', ''),
+                        "Status": status,
+                        "Zone Floor": round(zone['floor'], 2),
+                        "Zone Ceiling": round(zone['ceiling'], 2),
+                        "Total Touches": zone['touches']
+                    })
+                    
         except Exception:
             pass 
             
@@ -186,8 +209,11 @@ if run_scan:
     
     if results:
         df_display = pd.DataFrame(results)
-        df_display = df_display.sort_values(by="Date Formed", ascending=False)
-        st.success(f"💎 Scan Complete! Found **{len(df_display)}** Highly Authentic SMC setups.")
+        
+        col1, col2 = st.columns(2)
+        col1.success(f"🎯 Scan Complete! Found **{len(df_display)}** setups.")
+        col2.info(f"📊 Parameters: {zone_type} | {touches[0]}-{touches[1]} Touches | {timeframe}")
+        
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
-        st.warning("No patterns found. The market hasn't formed any strict authentic setups recently.")
+        st.warning(f"No stocks found matching these criteria on the {timeframe} timeframe.")
