@@ -4,9 +4,9 @@ import pandas as pd
 import time
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Advanced EMA Screener", layout="wide")
-st.title("📈 Multi-Timeframe EMA Screener")
-st.write("Dynamic timeframe auto-selection for precise pullbacks.")
+st.set_page_config(page_title="Fractal EMA Screener", layout="wide")
+st.title("📈 Advanced Multi-Timeframe EMA Screener")
+st.write("Dynamic timeframe auto-selection for precise pullbacks (Monthly -> Weekly -> Daily -> 15m).")
 
 # --- HELPER FUNCTIONS ---
 @st.cache_data(ttl=86400)
@@ -25,69 +25,77 @@ def get_nifty_tickers(index_name):
         st.error(f"Failed to fetch list from NSE: {e}")
         return []
 
+def extract_data(data_batch, ticker):
+    """Safely extracts a single ticker's dataframe from a yfinance batch download."""
+    if isinstance(data_batch.columns, pd.MultiIndex):
+        if ticker not in data_batch.columns.get_level_values(0):
+            return pd.DataFrame()
+        return data_batch[ticker].dropna()
+    else:
+        return data_batch.dropna()
+
 # --- SIDEBAR UI LOGIC ---
 st.sidebar.header("Filter Settings")
 
 # 1. Index Selection
-selected_index = st.sidebar.selectbox("Select Index", ["Nifty 50", "Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
+selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 50", "Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
 
-# Market Phase
-market_phase = st.sidebar.radio("Market Phase", ["Bullish (Support/Bounce)", "Bearish (Resistance/Rejection)"])
+# 2. Market Phase
+market_phase = st.sidebar.radio("2. Market Phase", ["Bullish (Uptrend)", "Bearish (Downtrend)"])
+is_bull = "Bullish" in market_phase
 
-# 2. Primary Trend
-st.sidebar.markdown("### 1. Primary Trend")
-if "Bullish" in market_phase:
-    primary_trend = st.sidebar.radio("Select Trend Condition", [
-        "Price > 50 MEMA (Monthly)",
-        "Price > 50 WEMA (Weekly)",
-        "Price > 50 DEMA (Daily)"
+# 3. Primary Trend Selection
+st.sidebar.markdown("### 3. Primary Trend")
+if is_bull:
+    primary_trend = st.sidebar.radio("Select Anchor Trend", [
+        "Price > 50 Monthly EMA",
+        "Price > 50 Weekly EMA",
+        "Price > 50 Daily EMA"
     ])
 else:
-    primary_trend = st.sidebar.radio("Select Trend Condition", [
-        "Price < 50 MEMA (Monthly)",
-        "Price < 50 WEMA (Weekly)",
-        "Price < 50 DEMA (Daily)"
+    primary_trend = st.sidebar.radio("Select Anchor Trend", [
+        "Price < 50 Monthly EMA",
+        "Price < 50 Weekly EMA",
+        "Price < 50 Daily EMA"
     ])
 
-# 3. Setup Strategy (Point 2 vs Point 3 logic)
-st.sidebar.markdown("### 2. Pullback Strategy")
-setup_type = st.sidebar.radio("Choose Setup Engine", [
-    "Use Auto 50 EMA Pullback (Point 2)",
-    "Use 20 EMA Pullback (Point 3)"
-])
+# 4. Dynamic Pullback Sub-Menu
+st.sidebar.markdown("### 4. Pullback Setup (Auto-Selected TF)")
 
-# Logic variables for the scanner
-active_setup = ""
-
-st.sidebar.markdown("### 3. Active Configuration")
-if setup_type == "Use Auto 50 EMA Pullback (Point 2)":
-    if "MEMA" in primary_trend:
-        st.sidebar.success("Auto-Selected: Touch 50 WEMA")
-        active_setup = "50_WEMA_TOUCH"
-    elif "WEMA" in primary_trend:
-        st.sidebar.success("Auto-Selected: Touch 50 DEMA")
-        active_setup = "50_DEMA_TOUCH"
-    else:
-        st.sidebar.error("Daily trend selected. Please switch to 'Use 20 EMA Pullback' for lower timeframes.")
-        active_setup = "NONE"
+if "Monthly" in primary_trend:
+    tf_primary = "Monthly"
+    tf_pullback = "Weekly"
+    st.sidebar.info("📉 Pullback TF: **Weekly**")
+    setup_choice = st.sidebar.radio("Select Setup:", [
+        "a). Price touches 50 EMA in Weekly timeframe",
+        "b). Price within 20 EMA and 50 EMA zone in Weekly timeframe"
+    ])
+elif "Weekly" in primary_trend:
+    tf_primary = "Weekly"
+    tf_pullback = "Daily"
+    st.sidebar.info("📉 Pullback TF: **Daily**")
+    setup_choice = st.sidebar.radio("Select Setup:", [
+        "a). Price touches 50 EMA in Daily timeframe",
+        "b). Price within 20 EMA and 50 EMA zone in Daily timeframe"
+    ])
 else:
-    # Point 3 takes over
-    active_setup = st.sidebar.radio("Select 20 EMA Touch Configuration:", [
-        "Touch 20 WEMA",
-        "Touch 20 DEMA"
+    tf_primary = "Daily"
+    tf_pullback = "15m"
+    st.sidebar.info("📉 Pullback TF: **15 Minute**")
+    setup_choice = st.sidebar.radio("Select Setup:", [
+        "a). Price touches 50 EMA in 15 Min timeframe",
+        "b). Price within 20 EMA and 50 EMA zone in 15 Min timeframe"
     ])
+
+is_touch_setup = "touches" in setup_choice
 
 # --- MAIN SCANNER LOGIC ---
 if st.sidebar.button("Run Fast Scanner"):
-    if active_setup == "NONE":
-        st.warning("Invalid configuration. Please adjust your sidebar settings.")
-        st.stop()
-
     tickers = get_nifty_tickers(selected_index)
     if not tickers:
         st.stop()
         
-    st.info(f"Scanning {len(tickers)} stocks in {selected_index}...")
+    st.info(f"Scanning {len(tickers)} stocks for {tf_primary} Trend + {tf_pullback} Pullback...")
     
     results = []
     my_bar = st.progress(0, text="Starting scan...")
@@ -95,102 +103,126 @@ if st.sidebar.button("Run Fast Scanner"):
     chunk_size = 100 
     total_chunks = (len(tickers) // chunk_size) + 1
     
+    # Determine how much daily data we need based on Primary Trend
+    if tf_primary == "Monthly": period_1d = "5y"
+    elif tf_primary == "Weekly": period_1d = "2y"
+    else: period_1d = "1y"
+    
     for chunk_idx in range(total_chunks):
         start_idx = chunk_idx * chunk_size
         end_idx = min(start_idx + chunk_size, len(tickers))
         current_batch = tickers[start_idx:end_idx]
         
-        if not current_batch:
-            break
+        if not current_batch: break
             
-        my_bar.progress((chunk_idx) / total_chunks, text=f"Downloading batch {chunk_idx + 1} of {total_chunks}...")
+        my_bar.progress(chunk_idx / total_chunks, text=f"Downloading batch {chunk_idx + 1} of {total_chunks}...")
         
-        # Download chunk
-        data = yf.download(current_batch, period="5y", interval="1d", group_by="ticker", threads=True, progress=False)
+        # Download Daily Data (needed for all setups to establish anchor trends)
+        data_1d = yf.download(current_batch, period=period_1d, interval="1d", group_by="ticker", threads=True, progress=False)
+        
+        # Download 15m Data ONLY if needed (saves memory and prevents timeouts)
+        data_15m = None
+        if tf_pullback == "15m":
+            data_15m = yf.download(current_batch, period="60d", interval="15m", group_by="ticker", threads=True, progress=False)
         
         for ticker in current_batch:
             try:
-                if len(current_batch) == 1:
-                    df = data.dropna()
-                elif isinstance(data.columns, pd.MultiIndex):
-                    if ticker not in data.columns.get_level_values(0):
-                        continue
-                    df = data[ticker].dropna()
-                else:
-                    df = data.dropna()
-                    
-                if len(df) < 250: 
-                    continue
-                    
-                # --- CALCULATE TIMEFRAMES ---
-                # Daily
-                d_c = df['Close'].iloc[-1]
-                d_low = df['Low'].iloc[-1]
-                d_high = df['High'].iloc[-1]
-                d_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-                d_50 = df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                df_1d = extract_data(data_1d, ticker)
+                if len(df_1d) < 50: continue
                 
-                # Weekly (Need high/low for touch logic)
-                weekly_df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
-                if len(weekly_df) < 50: continue
-                w_c = weekly_df['Close'].iloc[-1]
-                w_low = weekly_df['Low'].iloc[-1]
-                w_high = weekly_df['High'].iloc[-1]
-                w_20 = weekly_df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-                w_50 = weekly_df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                
-                # Monthly
-                monthly_df = df.resample('ME').last().dropna()
-                if len(monthly_df) < 50: continue
-                m_c = monthly_df['Close'].iloc[-1]
-                m_50 = monthly_df['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-
                 is_match = False
                 trend_match = False
+                
+                # --- CALCULATE REQUIRED TIMEFRAMES ---
+                
+                if tf_primary == "Monthly":
+                    # Monthly Trend
+                    df_m = df_1d.resample('ME').last().dropna()
+                    if len(df_m) < 50: continue
+                    m_c = df_m['Close'].iloc[-1]
+                    m_50 = df_m['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                    
+                    if is_bull and m_c > m_50: trend_match = True
+                    elif not is_bull and m_c < m_50: trend_match = True
+                        
+                    # Weekly Pullback
+                    if trend_match:
+                        df_w = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                        w_c, w_l, w_h = df_w['Close'].iloc[-1], df_w['Low'].iloc[-1], df_w['High'].iloc[-1]
+                        w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                        w_20 = df_w['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        
+                        if is_bull:
+                            if is_touch_setup and w_l <= w_50 and w_c > w_50: is_match = True
+                            elif not is_touch_setup and w_50 < w_c < w_20: is_match = True
+                        else:
+                            if is_touch_setup and w_h >= w_50 and w_c < w_50: is_match = True
+                            elif not is_touch_setup and w_50 > w_c > w_20: is_match = True
 
-                # --- 1. CHECK PRIMARY TREND ---
-                if "Bullish" in market_phase:
-                    if "MEMA" in primary_trend and m_c > m_50: trend_match = True
-                    elif "WEMA" in primary_trend and w_c > w_50: trend_match = True
-                    elif "DEMA" in primary_trend and d_c > d_50: trend_match = True
-                else:
-                    if "MEMA" in primary_trend and m_c < m_50: trend_match = True
-                    elif "WEMA" in primary_trend and w_c < w_50: trend_match = True
-                    elif "DEMA" in primary_trend and d_c < d_50: trend_match = True
+                elif tf_primary == "Weekly":
+                    # Weekly Trend
+                    df_w = df_1d.resample('W-FRI').last().dropna()
+                    if len(df_w) < 50: continue
+                    w_c = df_w['Close'].iloc[-1]
+                    w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                    
+                    if is_bull and w_c > w_50: trend_match = True
+                    elif not is_bull and w_c < w_50: trend_match = True
+                        
+                    # Daily Pullback
+                    if trend_match:
+                        d_c, d_l, d_h = df_1d['Close'].iloc[-1], df_1d['Low'].iloc[-1], df_1d['High'].iloc[-1]
+                        d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                        d_20 = df_1d['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        
+                        if is_bull:
+                            if is_touch_setup and d_l <= d_50 and d_c > d_50: is_match = True
+                            elif not is_touch_setup and d_50 < d_c < d_20: is_match = True
+                        else:
+                            if is_touch_setup and d_h >= d_50 and d_c < d_50: is_match = True
+                            elif not is_touch_setup and d_50 > d_c > d_20: is_match = True
 
-                # --- 2. CHECK SETUP TOUCH CONDITION ---
-                if trend_match:
-                    if "Bullish" in market_phase:
-                        # Bullish Touch: Low goes below EMA, but Close stays above EMA
-                        if active_setup == "50_WEMA_TOUCH" and w_low <= w_50 and w_c > w_50: is_match = True
-                        elif active_setup == "50_DEMA_TOUCH" and d_low <= d_50 and d_c > d_50: is_match = True
-                        elif active_setup == "Touch 20 WEMA" and w_low <= w_20 and w_c > w_20: is_match = True
-                        elif active_setup == "Touch 20 DEMA" and d_low <= d_20 and d_c > d_20: is_match = True
-                    else:
-                        # Bearish Touch: High goes above EMA, but Close stays below EMA
-                        if active_setup == "50_WEMA_TOUCH" and w_high >= w_50 and w_c < w_50: is_match = True
-                        elif active_setup == "50_DEMA_TOUCH" and d_high >= d_50 and d_c < d_50: is_match = True
-                        elif active_setup == "Touch 20 WEMA" and w_high >= w_20 and w_c < w_20: is_match = True
-                        elif active_setup == "Touch 20 DEMA" and d_high >= d_20 and d_c < d_20: is_match = True
+                elif tf_primary == "Daily":
+                    # Daily Trend
+                    d_c = df_1d['Close'].iloc[-1]
+                    d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                    
+                    if is_bull and d_c > d_50: trend_match = True
+                    elif not is_bull and d_c < d_50: trend_match = True
+                        
+                    # 15m Pullback
+                    if trend_match and data_15m is not None:
+                        df_15 = extract_data(data_15m, ticker)
+                        if len(df_15) < 50: continue
+                        
+                        c_15, l_15, h_15 = df_15['Close'].iloc[-1], df_15['Low'].iloc[-1], df_15['High'].iloc[-1]
+                        ema50_15 = df_15['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                        ema20_15 = df_15['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        
+                        if is_bull:
+                            if is_touch_setup and l_15 <= ema50_15 and c_15 > ema50_15: is_match = True
+                            elif not is_touch_setup and ema50_15 < c_15 < ema20_15: is_match = True
+                        else:
+                            if is_touch_setup and h_15 >= ema50_15 and c_15 < ema50_15: is_match = True
+                            elif not is_touch_setup and ema50_15 > c_15 > ema20_15: is_match = True
 
                 # --- RECORD MATCH ---
                 if is_match:
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
-                        "Close Price": round(d_c, 2),
-                        "Daily 20/50 EMA": f"{round(d_20, 2)} / {round(d_50, 2)}",
-                        "Weekly 20/50 EMA": f"{round(w_20, 2)} / {round(w_50, 2)}",
-                        "Monthly 50 EMA": round(m_50, 2)
+                        "Primary Trend": f"Matched ({tf_primary})",
+                        "Pullback Setup": f"Matched ({tf_pullback})",
+                        "Current Price": round(df_1d['Close'].iloc[-1], 2)
                     })
             except Exception:
                 continue
                 
-        time.sleep(1) # Prevent memory overload
+        time.sleep(0.5) # Protect server RAM
                 
     my_bar.empty()
     
     if results:
-        st.success(f"Found {len(results)} stocks matching your strategy!")
+        st.success(f"Found {len(results)} perfect setups!")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.warning("No stocks met this specific technical criteria at today's close.")
+        st.warning("No stocks met this exact fractal criteria right now.")
