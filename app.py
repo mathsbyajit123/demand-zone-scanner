@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 
 # --- APP CONFIGURATION ---
 st.set_page_config(page_title="Multi-TF EMA Screener", layout="wide")
@@ -48,19 +47,16 @@ if st.sidebar.button("Run Fast Scanner"):
         
     st.info(f"Downloading 5 years of historical data for {len(tickers)} stocks at once. Please wait 10-15 seconds...")
     
-    # --- BATCH DOWNLOAD (Solves the timeout issue) ---
+    # --- BATCH DOWNLOAD ---
     data = yf.download(tickers, period="5y", interval="1d", group_by="ticker", threads=True, progress=False)
     
     results = []
-    
-    # Progress bar for internal calculations
     my_bar = st.progress(0, text="Calculating EMAs across multiple timeframes...")
     
     for i, ticker in enumerate(tickers):
         my_bar.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
         
         try:
-            # Safely extract ticker data from the batch download
             if isinstance(data.columns, pd.MultiIndex):
                 if ticker not in data.columns.get_level_values(0):
                     continue
@@ -68,41 +64,38 @@ if st.sidebar.button("Run Fast Scanner"):
             else:
                 df = data.dropna()
                 
-            # Need at least ~250 days to calculate a proper Monthly 50 EMA
             if len(df) < 250: 
                 continue
                 
-            # --- DAILY DATA ---
+            # --- DAILY DATA (Native Pandas EMA) ---
             daily_close = df['Close']
-            d_20 = ta.ema(daily_close, length=20).iloc[-1]
-            d_50 = ta.ema(daily_close, length=50).iloc[-1]
+            d_20 = daily_close.ewm(span=20, adjust=False).mean().iloc[-1]
+            d_50 = daily_close.ewm(span=50, adjust=False).mean().iloc[-1]
             d_c = daily_close.iloc[-1]
             
-            # --- WEEKLY DATA (Resampled) ---
+            # --- WEEKLY DATA (Native Pandas EMA) ---
             weekly_close = daily_close.resample('W-FRI').last().dropna()
             if len(weekly_close) < 50: continue
-            w_50 = ta.ema(weekly_close, length=50).iloc[-1]
+            w_50 = weekly_close.ewm(span=50, adjust=False).mean().iloc[-1]
             w_c = weekly_close.iloc[-1]
             
-            # --- MONTHLY DATA (Resampled) ---
+            # --- MONTHLY DATA (Native Pandas EMA) ---
             monthly_close = daily_close.resample('ME').last().dropna()
             if len(monthly_close) < 50: continue
-            m_50 = ta.ema(monthly_close, length=50).iloc[-1]
+            m_50 = monthly_close.ewm(span=50, adjust=False).mean().iloc[-1]
             m_c = monthly_close.iloc[-1]
             
             is_match = False
             
             # --- BULL MARKET LOGIC ---
             if market_phase == "Bull Market (Price > 50 EMA on Daily, Weekly, & Monthly)":
-                if d_c > d_50 and w_c > w_50 and m_c > m_50: # Trend Alignment Check
+                if d_c > d_50 and w_c > w_50 and m_c > m_50: 
                     
                     if setup_condition == "Pullback Zone (Between 20 EMA and 50 EMA)":
-                        # Price is dropping below 20 EMA, but 50 EMA is supporting it
                         if d_50 < d_c < d_20:
                             is_match = True
                             
                     elif setup_condition == "Just Touched 50 EMA (Bounce)":
-                        # Daily Low dipped below 50 EMA, but Daily Close bounced above it
                         d_l = df['Low'].iloc[-1]
                         if d_l <= d_50 and d_c > d_50:
                             is_match = True
@@ -112,15 +105,13 @@ if st.sidebar.button("Run Fast Scanner"):
 
             # --- BEAR MARKET LOGIC ---
             elif market_phase == "Bear Market (Price < 50 EMA on Daily, Weekly, & Monthly)":
-                if d_c < d_50 and w_c < w_50 and m_c < m_50: # Trend Alignment Check
+                if d_c < d_50 and w_c < w_50 and m_c < m_50: 
                     
                     if setup_condition == "Pullback Zone (Between 20 EMA and 50 EMA)":
-                        # Price is rallying above 20 EMA, but 50 EMA is resisting it
                         if d_50 > d_c > d_20:
                             is_match = True
                             
                     elif setup_condition == "Just Touched 50 EMA (Bounce)":
-                        # Daily High rallied into 50 EMA, but Daily Close was pushed below it
                         d_h = df['High'].iloc[-1]
                         if d_h >= d_50 and d_c < d_50:
                             is_match = True
