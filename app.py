@@ -44,19 +44,19 @@ selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 50", "Nifty 500
 market_phase = st.sidebar.radio("2. Market Phase", ["Bullish (Uptrend)", "Bearish (Downtrend)"])
 is_bull = "Bullish" in market_phase
 
-# 3. Primary Trend Selection
-st.sidebar.markdown("### 3. Primary Trend")
+# 3. Primary Trend Selection (Updated for STRICT NO TOUCH)
+st.sidebar.markdown("### 3. Primary Trend (No Touch)")
 if is_bull:
     primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        "Price > 50 Monthly EMA",
-        "Price > 50 Weekly EMA",
-        "Price > 50 Daily EMA"
+        "Price Strictly > 50 Monthly EMA",
+        "Price Strictly > 50 Weekly EMA",
+        "Price Strictly > 50 Daily EMA"
     ])
 else:
     primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        "Price < 50 Monthly EMA",
-        "Price < 50 Weekly EMA",
-        "Price < 50 Daily EMA"
+        "Price Strictly < 50 Monthly EMA",
+        "Price Strictly < 50 Weekly EMA",
+        "Price Strictly < 50 Daily EMA"
     ])
 
 # 4. Dynamic Pullback Sub-Menu
@@ -95,7 +95,7 @@ if st.sidebar.button("Run Fast Scanner"):
     if not tickers:
         st.stop()
         
-    st.info(f"Scanning {len(tickers)} stocks for {tf_primary} Trend + {tf_pullback} Pullback...")
+    st.info(f"Scanning {len(tickers)} stocks for strictly clean {tf_primary} Trend + {tf_pullback} Pullback...")
     
     results = []
     my_bar = st.progress(0, text="Starting scan...")
@@ -117,10 +117,10 @@ if st.sidebar.button("Run Fast Scanner"):
             
         my_bar.progress(chunk_idx / total_chunks, text=f"Downloading batch {chunk_idx + 1} of {total_chunks}...")
         
-        # Download Daily Data (needed for all setups to establish anchor trends)
+        # Download Daily Data
         data_1d = yf.download(current_batch, period=period_1d, interval="1d", group_by="ticker", threads=True, progress=False)
         
-        # Download 15m Data ONLY if needed (saves memory and prevents timeouts)
+        # Download 15m Data ONLY if needed
         data_15m = None
         if tf_pullback == "15m":
             data_15m = yf.download(current_batch, period="60d", interval="15m", group_by="ticker", threads=True, progress=False)
@@ -136,14 +136,14 @@ if st.sidebar.button("Run Fast Scanner"):
                 # --- CALCULATE REQUIRED TIMEFRAMES ---
                 
                 if tf_primary == "Monthly":
-                    # Monthly Trend
-                    df_m = df_1d.resample('ME').last().dropna()
+                    # Monthly Trend (Checking High/Low for NO TOUCH)
+                    df_m = df_1d.resample('ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
                     if len(df_m) < 50: continue
-                    m_c = df_m['Close'].iloc[-1]
+                    m_l, m_h = df_m['Low'].iloc[-1], df_m['High'].iloc[-1]
                     m_50 = df_m['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and m_c > m_50: trend_match = True
-                    elif not is_bull and m_c < m_50: trend_match = True
+                    if is_bull and m_l > m_50: trend_match = True
+                    elif not is_bull and m_h < m_50: trend_match = True
                         
                     # Weekly Pullback
                     if trend_match:
@@ -160,14 +160,14 @@ if st.sidebar.button("Run Fast Scanner"):
                             elif not is_touch_setup and w_50 > w_c > w_20: is_match = True
 
                 elif tf_primary == "Weekly":
-                    # Weekly Trend
-                    df_w = df_1d.resample('W-FRI').last().dropna()
+                    # Weekly Trend (Checking High/Low for NO TOUCH)
+                    df_w = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
                     if len(df_w) < 50: continue
-                    w_c = df_w['Close'].iloc[-1]
+                    w_l, w_h = df_w['Low'].iloc[-1], df_w['High'].iloc[-1]
                     w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and w_c > w_50: trend_match = True
-                    elif not is_bull and w_c < w_50: trend_match = True
+                    if is_bull and w_l > w_50: trend_match = True
+                    elif not is_bull and w_h < w_50: trend_match = True
                         
                     # Daily Pullback
                     if trend_match:
@@ -183,12 +183,12 @@ if st.sidebar.button("Run Fast Scanner"):
                             elif not is_touch_setup and d_50 > d_c > d_20: is_match = True
 
                 elif tf_primary == "Daily":
-                    # Daily Trend
-                    d_c = df_1d['Close'].iloc[-1]
+                    # Daily Trend (Checking High/Low for NO TOUCH)
+                    d_l, d_h = df_1d['Low'].iloc[-1], df_1d['High'].iloc[-1]
                     d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and d_c > d_50: trend_match = True
-                    elif not is_bull and d_c < d_50: trend_match = True
+                    if is_bull and d_l > d_50: trend_match = True
+                    elif not is_bull and d_h < d_50: trend_match = True
                         
                     # 15m Pullback
                     if trend_match and data_15m is not None:
@@ -210,19 +210,19 @@ if st.sidebar.button("Run Fast Scanner"):
                 if is_match:
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
-                        "Primary Trend": f"Matched ({tf_primary})",
+                        "Primary Trend": f"Strict {tf_primary}",
                         "Pullback Setup": f"Matched ({tf_pullback})",
                         "Current Price": round(df_1d['Close'].iloc[-1], 2)
                     })
             except Exception:
                 continue
                 
-        time.sleep(0.5) # Protect server RAM
+        time.sleep(0.5) 
                 
     my_bar.empty()
     
     if results:
-        st.success(f"Found {len(results)} perfect setups!")
+        st.success(f"Found {len(results)} perfect clean-trend setups!")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.warning("No stocks met this exact fractal criteria right now.")
+        st.warning("No stocks met this extremely strict technical criteria right now.")
