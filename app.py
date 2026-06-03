@@ -2,153 +2,149 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import datetime
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Indian Market 50 EMA Screener", layout="wide")
-st.title("📈 50 EMA Swing Trading Screener")
-st.write("Scan Indian indices for specific 50 EMA setups.")
+st.set_page_config(page_title="Multi-TF EMA Screener", layout="wide")
+st.title("📈 Advanced Multi-Timeframe EMA Screener")
+st.write("Scans all 500 Nifty stocks simultaneously using Batch Downloading (approx 10-15 seconds).")
 
 # --- HELPER FUNCTIONS ---
-@st.cache_data(ttl=86400) # Cache for 24 hours to speed up loads
+@st.cache_data(ttl=86400)
 def get_nifty_tickers(index_name):
-    """Fetches official stock lists from NSE and formats for yfinance."""
+    """Fetches exact official lists from NSE."""
     urls = {
         "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
         "Nifty Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
         "Nifty Smallcap 250": "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
     }
-    
     try:
         df = pd.read_csv(urls[index_name])
-        # yfinance requires '.NS' suffix for Indian National Stock Exchange tickers
-        tickers = df['Symbol'].astype(str) + ".NS"
-        return tickers.tolist()
+        # Add .NS suffix for Indian Stocks in Yahoo Finance
+        return (df['Symbol'].astype(str) + ".NS").tolist()
     except Exception as e:
-        st.error(f"Failed to fetch ticker list from NSE: {e}")
+        st.error(f"Failed to fetch list from NSE: {e}")
         return []
-
-def calculate_ema_conditions(ticker, period="1y", interval="1d", condition_type="Above"):
-    """Fetches data and checks the 50 EMA conditions."""
-    try:
-        data = yf.download(ticker, period=period, interval=interval, progress=False)
-        if data.empty or len(data) < 50:
-            return None
-            
-        # Calculate 50 EMA
-        data['EMA_50'] = ta.ema(data['Close'], length=50)
-        data.dropna(inplace=True)
-        
-        if data.empty:
-            return None
-            
-        latest = data.iloc[-1]
-        prev = data.iloc[-2]
-        
-        close = latest['Close']
-        low = latest['Low']
-        ema = latest['EMA_50']
-        
-        prev_close = prev['Close']
-        prev_low = prev['Low']
-        prev_ema = prev['EMA_50']
-
-        # Determine if condition is met
-        status = False
-        
-        if condition_type == "1. Just Approaching (Within 2%)":
-            # Price is above EMA, but has dropped to within 2% of it
-            proximity = ((close - ema) / ema) * 100
-            if 0 < proximity <= 2.0:
-                status = True
-                
-        elif condition_type == "2. Just Touched (Bounce off)":
-            # Low went below/touched EMA, but closed above it
-            if low <= ema and close > ema:
-                status = True
-                
-        elif condition_type == "3. Touch and Away (Confirmed Bounce)":
-            # Yesterday touched, today is green and moving up
-            if (prev_low <= prev_ema and prev_close > prev_ema) and (close > prev_close):
-                status = True
-                
-        elif condition_type == "4. Above 50 EMA":
-            # Simple trend check
-            if close > ema:
-                status = True
-
-        if status:
-            return {"Ticker": ticker.replace(".NS", ""), "Close": round(close, 2), "EMA_50": round(ema, 2)}
-        return None
-
-    except Exception:
-        return None
 
 # --- SIDEBAR UI ---
 st.sidebar.header("Filter Settings")
+selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
 
-selected_index = st.sidebar.selectbox(
-    "1. Select Index",
-    ["Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"]
-)
+market_phase = st.sidebar.radio("2. Multi-Timeframe Trend", [
+    "Bull Market (Price > 50 EMA on Daily, Weekly, & Monthly)", 
+    "Bear Market (Price < 50 EMA on Daily, Weekly, & Monthly)"
+])
 
-selected_tf = st.sidebar.selectbox(
-    "2. Select Timeframe",
-    ["Daily", "Weekly", "Monthly"]
-)
+setup_condition = st.sidebar.radio("3. Daily Trade Setup", [
+    "Pullback Zone (Between 20 EMA and 50 EMA)",
+    "Just Touched 50 EMA (Bounce)",
+    "Standard (Just follow Multi-TF Trend)"
+])
 
-# Map UI selection to yfinance intervals
-tf_mapping = {"Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"}
-period_mapping = {"Daily": "1y", "Weekly": "3y", "Monthly": "5y"}
-
-selected_condition = st.sidebar.selectbox(
-    "3. Select 50 EMA Condition",
-    [
-        "1. Just Approaching (Within 2%)", 
-        "2. Just Touched (Bounce off)", 
-        "3. Touch and Away (Confirmed Bounce)", 
-        "4. Above 50 EMA"
-    ]
-)
-
-# --- MAIN APP LOGIC ---
-if st.sidebar.button("Run Scanner"):
+# --- MAIN LOGIC ---
+if st.sidebar.button("Run Fast Scanner"):
     tickers = get_nifty_tickers(selected_index)
+    if not tickers:
+        st.stop()
+        
+    st.info(f"Downloading 5 years of historical data for {len(tickers)} stocks at once. Please wait 10-15 seconds...")
     
-    if tickers:
-        st.write(f"Scanning **{len(tickers)}** stocks in **{selected_index}** on **{selected_tf}** timeframe for: *{selected_condition}*")
+    # --- BATCH DOWNLOAD (Solves the timeout issue) ---
+    data = yf.download(tickers, period="5y", interval="1d", group_by="ticker", threads=True, progress=False)
+    
+    results = []
+    
+    # Progress bar for internal calculations
+    my_bar = st.progress(0, text="Calculating EMAs across multiple timeframes...")
+    
+    for i, ticker in enumerate(tickers):
+        my_bar.progress((i + 1) / len(tickers), text=f"Analyzing {ticker}...")
         
-        # Progress bar
-        progress_text = "Scanning in progress. Please wait..."
-        my_bar = st.progress(0, text=progress_text)
-        
-        results = []
-        total_tickers = len(tickers)
-        
-        # We limit to first 100 for live app performance, yfinance rate limits can trigger on 500
-        # Remove `[:100]` if you want to scan all 500, but it will take a few minutes.
-        scan_list = tickers[:100] 
-        
-        for i, ticker in enumerate(scan_list):
-            res = calculate_ema_conditions(
-                ticker, 
-                period=period_mapping[selected_tf], 
-                interval=tf_mapping[selected_tf], 
-                condition_type=selected_condition
-            )
-            if res:
-                results.append(res)
+        try:
+            # Safely extract ticker data from the batch download
+            if isinstance(data.columns, pd.MultiIndex):
+                if ticker not in data.columns.get_level_values(0):
+                    continue
+                df = data[ticker].dropna()
+            else:
+                df = data.dropna()
                 
-            # Update progress
-            my_bar.progress((i + 1) / len(scan_list), text=f"Scanning {ticker}...")
+            # Need at least ~250 days to calculate a proper Monthly 50 EMA
+            if len(df) < 250: 
+                continue
+                
+            # --- DAILY DATA ---
+            daily_close = df['Close']
+            d_20 = ta.ema(daily_close, length=20).iloc[-1]
+            d_50 = ta.ema(daily_close, length=50).iloc[-1]
+            d_c = daily_close.iloc[-1]
             
-        my_bar.empty()
-        
-        if results:
-            st.success(f"Found {len(results)} stocks matching your criteria!")
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
-        else:
-            st.warning("No stocks found matching this exact criteria right now.")
+            # --- WEEKLY DATA (Resampled) ---
+            weekly_close = daily_close.resample('W-FRI').last().dropna()
+            if len(weekly_close) < 50: continue
+            w_50 = ta.ema(weekly_close, length=50).iloc[-1]
+            w_c = weekly_close.iloc[-1]
+            
+            # --- MONTHLY DATA (Resampled) ---
+            monthly_close = daily_close.resample('ME').last().dropna()
+            if len(monthly_close) < 50: continue
+            m_50 = ta.ema(monthly_close, length=50).iloc[-1]
+            m_c = monthly_close.iloc[-1]
+            
+            is_match = False
+            
+            # --- BULL MARKET LOGIC ---
+            if market_phase == "Bull Market (Price > 50 EMA on Daily, Weekly, & Monthly)":
+                if d_c > d_50 and w_c > w_50 and m_c > m_50: # Trend Alignment Check
+                    
+                    if setup_condition == "Pullback Zone (Between 20 EMA and 50 EMA)":
+                        # Price is dropping below 20 EMA, but 50 EMA is supporting it
+                        if d_50 < d_c < d_20:
+                            is_match = True
+                            
+                    elif setup_condition == "Just Touched 50 EMA (Bounce)":
+                        # Daily Low dipped below 50 EMA, but Daily Close bounced above it
+                        d_l = df['Low'].iloc[-1]
+                        if d_l <= d_50 and d_c > d_50:
+                            is_match = True
+                            
+                    elif setup_condition == "Standard (Just follow Multi-TF Trend)":
+                        is_match = True
 
-st.sidebar.markdown("---")
-st.sidebar.info("Note: Scanning 500 stocks live via Yahoo Finance takes time. The code defaults to scanning the top 100 of the list to prevent timeouts. You can adjust this in the code.")
+            # --- BEAR MARKET LOGIC ---
+            elif market_phase == "Bear Market (Price < 50 EMA on Daily, Weekly, & Monthly)":
+                if d_c < d_50 and w_c < w_50 and m_c < m_50: # Trend Alignment Check
+                    
+                    if setup_condition == "Pullback Zone (Between 20 EMA and 50 EMA)":
+                        # Price is rallying above 20 EMA, but 50 EMA is resisting it
+                        if d_50 > d_c > d_20:
+                            is_match = True
+                            
+                    elif setup_condition == "Just Touched 50 EMA (Bounce)":
+                        # Daily High rallied into 50 EMA, but Daily Close was pushed below it
+                        d_h = df['High'].iloc[-1]
+                        if d_h >= d_50 and d_c < d_50:
+                            is_match = True
+                            
+                    elif setup_condition == "Standard (Just follow Multi-TF Trend)":
+                        is_match = True
+
+            if is_match:
+                results.append({
+                    "Ticker": ticker.replace(".NS", ""),
+                    "Close Price": round(d_c, 2),
+                    "Daily 20 EMA": round(d_20, 2),
+                    "Daily 50 EMA": round(d_50, 2),
+                    "Weekly 50 EMA": round(w_50, 2),
+                    "Monthly 50 EMA": round(m_50, 2)
+                })
+                
+        except Exception:
+            continue
+            
+    my_bar.empty()
+    
+    if results:
+        st.success(f"Found {len(results)} stocks matching your exact criteria.")
+        st.dataframe(pd.DataFrame(results), use_container_width=True)
+    else:
+        st.warning("No stocks met this exact technical criteria at today's close.")
