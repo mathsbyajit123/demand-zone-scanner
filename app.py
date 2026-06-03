@@ -44,7 +44,7 @@ selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 50", "Nifty 500
 market_phase = st.sidebar.radio("2. Market Phase", ["Bullish (Uptrend)", "Bearish (Downtrend)"])
 is_bull = "Bullish" in market_phase
 
-# 3. Primary Trend Selection (Updated for STRICT NO TOUCH)
+# 3. Primary Trend Selection (STRICT NO TOUCH)
 st.sidebar.markdown("### 3. Primary Trend (No Touch)")
 if is_bull:
     primary_trend = st.sidebar.radio("Select Anchor Trend", [
@@ -68,7 +68,8 @@ if "Monthly" in primary_trend:
     st.sidebar.info("📉 Pullback TF: **Weekly**")
     setup_choice = st.sidebar.radio("Select Setup:", [
         "a). Price touches 50 EMA in Weekly timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in Weekly timeframe"
+        "b). Price within 20 EMA and 50 EMA zone in Weekly timeframe",
+        "c). Price touches 20 EMA in Weekly timeframe"
     ])
 elif "Weekly" in primary_trend:
     tf_primary = "Weekly"
@@ -76,7 +77,8 @@ elif "Weekly" in primary_trend:
     st.sidebar.info("📉 Pullback TF: **Daily**")
     setup_choice = st.sidebar.radio("Select Setup:", [
         "a). Price touches 50 EMA in Daily timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in Daily timeframe"
+        "b). Price within 20 EMA and 50 EMA zone in Daily timeframe",
+        "c). Price touches 20 EMA in Daily timeframe"
     ])
 else:
     tf_primary = "Daily"
@@ -84,10 +86,14 @@ else:
     st.sidebar.info("📉 Pullback TF: **15 Minute**")
     setup_choice = st.sidebar.radio("Select Setup:", [
         "a). Price touches 50 EMA in 15 Min timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in 15 Min timeframe"
+        "b). Price within 20 EMA and 50 EMA zone in 15 Min timeframe",
+        "c). Price touches 20 EMA in 15 Min timeframe"
     ])
 
-is_touch_setup = "touches" in setup_choice
+# Setup logic flags
+is_touch_50 = "touches 50 EMA" in setup_choice
+is_touch_20 = "touches 20 EMA" in setup_choice
+is_zone = "zone" in setup_choice
 
 # --- MAIN SCANNER LOGIC ---
 if st.sidebar.button("Run Fast Scanner"):
@@ -153,11 +159,13 @@ if st.sidebar.button("Run Fast Scanner"):
                         w_20 = df_w['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
                         
                         if is_bull:
-                            if is_touch_setup and w_l <= w_50 and w_c > w_50: is_match = True
-                            elif not is_touch_setup and w_50 < w_c < w_20: is_match = True
+                            if is_touch_50 and w_l <= w_50 and w_c > w_50: is_match = True
+                            elif is_touch_20 and w_l <= w_20 and w_c > w_20: is_match = True
+                            elif is_zone and w_50 < w_c < w_20: is_match = True
                         else:
-                            if is_touch_setup and w_h >= w_50 and w_c < w_50: is_match = True
-                            elif not is_touch_setup and w_50 > w_c > w_20: is_match = True
+                            if is_touch_50 and w_h >= w_50 and w_c < w_50: is_match = True
+                            elif is_touch_20 and w_h >= w_20 and w_c < w_20: is_match = True
+                            elif is_zone and w_50 > w_c > w_20: is_match = True
 
                 elif tf_primary == "Weekly":
                     # Weekly Trend (Checking High/Low for NO TOUCH)
@@ -176,11 +184,13 @@ if st.sidebar.button("Run Fast Scanner"):
                         d_20 = df_1d['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
                         
                         if is_bull:
-                            if is_touch_setup and d_l <= d_50 and d_c > d_50: is_match = True
-                            elif not is_touch_setup and d_50 < d_c < d_20: is_match = True
+                            if is_touch_50 and d_l <= d_50 and d_c > d_50: is_match = True
+                            elif is_touch_20 and d_l <= d_20 and d_c > d_20: is_match = True
+                            elif is_zone and d_50 < d_c < d_20: is_match = True
                         else:
-                            if is_touch_setup and d_h >= d_50 and d_c < d_50: is_match = True
-                            elif not is_touch_setup and d_50 > d_c > d_20: is_match = True
+                            if is_touch_50 and d_h >= d_50 and d_c < d_50: is_match = True
+                            elif is_touch_20 and d_h >= d_20 and d_c < d_20: is_match = True
+                            elif is_zone and d_50 > d_c > d_20: is_match = True
 
                 elif tf_primary == "Daily":
                     # Daily Trend (Checking High/Low for NO TOUCH)
@@ -200,11 +210,13 @@ if st.sidebar.button("Run Fast Scanner"):
                         ema20_15 = df_15['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
                         
                         if is_bull:
-                            if is_touch_setup and l_15 <= ema50_15 and c_15 > ema50_15: is_match = True
-                            elif not is_touch_setup and ema50_15 < c_15 < ema20_15: is_match = True
+                            if is_touch_50 and l_15 <= ema50_15 and c_15 > ema50_15: is_match = True
+                            elif is_touch_20 and l_15 <= ema20_15 and c_15 > ema20_15: is_match = True
+                            elif is_zone and ema50_15 < c_15 < ema20_15: is_match = True
                         else:
-                            if is_touch_setup and h_15 >= ema50_15 and c_15 < ema50_15: is_match = True
-                            elif not is_touch_setup and ema50_15 > c_15 > ema20_15: is_match = True
+                            if is_touch_50 and h_15 >= ema50_15 and c_15 < ema50_15: is_match = True
+                            elif is_touch_20 and h_15 >= ema20_15 and c_15 < ema20_15: is_match = True
+                            elif is_zone and ema50_15 > c_15 > ema20_15: is_match = True
 
                 # --- RECORD MATCH ---
                 if is_match:
