@@ -44,19 +44,22 @@ selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 50", "Nifty 500
 market_phase = st.sidebar.radio("2. Market Phase", ["Bullish (Uptrend)", "Bearish (Downtrend)"])
 is_bull = "Bullish" in market_phase
 
-# 3. Primary Trend Selection (STRICT NO TOUCH)
-st.sidebar.markdown("### 3. Primary Trend (No Touch)")
+# 3. Primary Trend Selection (MOMENTUM GAP)
+st.sidebar.markdown("### 3. Primary Trend (Momentum Gap)")
+trend_gap = st.sidebar.slider("Minimum % Distance from 50 EMA", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
+gap_decimal = trend_gap / 100.0
+
 if is_bull:
     primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        "Price Strictly > 50 Monthly EMA",
-        "Price Strictly > 50 Weekly EMA",
-        "Price Strictly > 50 Daily EMA"
+        f"Price > 50 Monthly EMA (by at least {trend_gap}%)",
+        f"Price > 50 Weekly EMA (by at least {trend_gap}%)",
+        f"Price > 50 Daily EMA (by at least {trend_gap}%)"
     ])
 else:
     primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        "Price Strictly < 50 Monthly EMA",
-        "Price Strictly < 50 Weekly EMA",
-        "Price Strictly < 50 Daily EMA"
+        f"Price < 50 Monthly EMA (by at least {trend_gap}%)",
+        f"Price < 50 Weekly EMA (by at least {trend_gap}%)",
+        f"Price < 50 Daily EMA (by at least {trend_gap}%)"
     ])
 
 # 4. Dynamic Pullback Sub-Menu
@@ -101,7 +104,7 @@ if st.sidebar.button("Run Fast Scanner"):
     if not tickers:
         st.stop()
         
-    st.info(f"Scanning {len(tickers)} stocks for strictly clean {tf_primary} Trend + {tf_pullback} Pullback...")
+    st.info(f"Scanning {len(tickers)} stocks for {trend_gap}% {tf_primary} Trend Gap + {tf_pullback} Pullback...")
     
     results = []
     my_bar = st.progress(0, text="Starting scan...")
@@ -142,14 +145,14 @@ if st.sidebar.button("Run Fast Scanner"):
                 # --- CALCULATE REQUIRED TIMEFRAMES ---
                 
                 if tf_primary == "Monthly":
-                    # Monthly Trend (Checking High/Low for NO TOUCH)
-                    df_m = df_1d.resample('ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                    # Monthly Trend (Checking Percentage Distance)
+                    df_m = df_1d.resample('ME').last().dropna()
                     if len(df_m) < 50: continue
-                    m_l, m_h = df_m['Low'].iloc[-1], df_m['High'].iloc[-1]
+                    m_c = df_m['Close'].iloc[-1]
                     m_50 = df_m['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and m_l > m_50: trend_match = True
-                    elif not is_bull and m_h < m_50: trend_match = True
+                    if is_bull and ((m_c - m_50) / m_50) >= gap_decimal: trend_match = True
+                    elif not is_bull and ((m_50 - m_c) / m_50) >= gap_decimal: trend_match = True
                         
                     # Weekly Pullback
                     if trend_match:
@@ -168,14 +171,14 @@ if st.sidebar.button("Run Fast Scanner"):
                             elif is_zone and w_50 > w_c > w_20: is_match = True
 
                 elif tf_primary == "Weekly":
-                    # Weekly Trend (Checking High/Low for NO TOUCH)
-                    df_w = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                    # Weekly Trend (Checking Percentage Distance)
+                    df_w = df_1d.resample('W-FRI').last().dropna()
                     if len(df_w) < 50: continue
-                    w_l, w_h = df_w['Low'].iloc[-1], df_w['High'].iloc[-1]
+                    w_c = df_w['Close'].iloc[-1]
                     w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and w_l > w_50: trend_match = True
-                    elif not is_bull and w_h < w_50: trend_match = True
+                    if is_bull and ((w_c - w_50) / w_50) >= gap_decimal: trend_match = True
+                    elif not is_bull and ((w_50 - w_c) / w_50) >= gap_decimal: trend_match = True
                         
                     # Daily Pullback
                     if trend_match:
@@ -193,12 +196,12 @@ if st.sidebar.button("Run Fast Scanner"):
                             elif is_zone and d_50 > d_c > d_20: is_match = True
 
                 elif tf_primary == "Daily":
-                    # Daily Trend (Checking High/Low for NO TOUCH)
-                    d_l, d_h = df_1d['Low'].iloc[-1], df_1d['High'].iloc[-1]
+                    # Daily Trend (Checking Percentage Distance)
+                    d_c = df_1d['Close'].iloc[-1]
                     d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
-                    if is_bull and d_l > d_50: trend_match = True
-                    elif not is_bull and d_h < d_50: trend_match = True
+                    if is_bull and ((d_c - d_50) / d_50) >= gap_decimal: trend_match = True
+                    elif not is_bull and ((d_50 - d_c) / d_50) >= gap_decimal: trend_match = True
                         
                     # 15m Pullback
                     if trend_match and data_15m is not None:
@@ -222,7 +225,7 @@ if st.sidebar.button("Run Fast Scanner"):
                 if is_match:
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
-                        "Primary Trend": f"Strict {tf_primary}",
+                        "Primary Trend": f"Gap \u2265 {trend_gap}% ({tf_primary})",
                         "Pullback Setup": f"Matched ({tf_pullback})",
                         "Current Price": round(df_1d['Close'].iloc[-1], 2)
                     })
@@ -234,7 +237,7 @@ if st.sidebar.button("Run Fast Scanner"):
     my_bar.empty()
     
     if results:
-        st.success(f"Found {len(results)} perfect clean-trend setups!")
+        st.success(f"Found {len(results)} high-momentum pullbacks!")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.warning("No stocks met this extremely strict technical criteria right now.")
+        st.warning("No stocks met this strict momentum criteria right now.")
