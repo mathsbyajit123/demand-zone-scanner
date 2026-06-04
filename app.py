@@ -104,7 +104,7 @@ if st.sidebar.button("Run Fast Scanner"):
     if not tickers:
         st.stop()
         
-    st.info(f"Scanning {len(tickers)} stocks for {trend_gap}% {tf_primary} Trend Gap + {tf_pullback} Pullback...")
+    st.info(f"Scanning {len(tickers)} stocks for {trend_gap}% {tf_primary} Trend Gap + FRESH {tf_pullback} Pullback...")
     
     results = []
     my_bar = st.progress(0, text="Starting scan...")
@@ -145,7 +145,7 @@ if st.sidebar.button("Run Fast Scanner"):
                 # --- CALCULATE REQUIRED TIMEFRAMES ---
                 
                 if tf_primary == "Monthly":
-                    # Monthly Trend (Checking Percentage Distance)
+                    # Monthly Trend
                     df_m = df_1d.resample('ME').last().dropna()
                     if len(df_m) < 50: continue
                     m_c = df_m['Close'].iloc[-1]
@@ -154,24 +154,32 @@ if st.sidebar.button("Run Fast Scanner"):
                     if is_bull and ((m_c - m_50) / m_50) >= gap_decimal: trend_match = True
                     elif not is_bull and ((m_50 - m_c) / m_50) >= gap_decimal: trend_match = True
                         
-                    # Weekly Pullback
+                    # Weekly Pullback (FRESH TOUCH LOGIC)
                     if trend_match:
                         df_w = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                        
                         w_c, w_l, w_h = df_w['Close'].iloc[-1], df_w['Low'].iloc[-1], df_w['High'].iloc[-1]
-                        w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                        w_20 = df_w['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        w_prev_c, w_prev_l, w_prev_h = df_w['Close'].iloc[-2], df_w['Low'].iloc[-2], df_w['High'].iloc[-2]
+                        
+                        w_50_series = df_w['Close'].ewm(span=50, adjust=False).mean()
+                        w_20_series = df_w['Close'].ewm(span=20, adjust=False).mean()
+                        
+                        w_50, w_50_prev = w_50_series.iloc[-1], w_50_series.iloc[-2]
+                        w_20, w_20_prev = w_20_series.iloc[-1], w_20_series.iloc[-2]
                         
                         if is_bull:
-                            if is_touch_50 and w_l <= w_50 and w_c > w_50: is_match = True
-                            elif is_touch_20 and w_l <= w_20 and w_c > w_20: is_match = True
-                            elif is_zone and w_50 < w_c < w_20: is_match = True
+                            # Must have been completely above EMA previously to be a "fresh touch"
+                            if is_touch_50 and w_prev_l > w_50_prev and w_l <= w_50 and w_c > w_50: is_match = True
+                            elif is_touch_20 and w_prev_l > w_20_prev and w_l <= w_20 and w_c > w_20: is_match = True
+                            elif is_zone and w_prev_c > w_20_prev and w_50 < w_c < w_20: is_match = True
                         else:
-                            if is_touch_50 and w_h >= w_50 and w_c < w_50: is_match = True
-                            elif is_touch_20 and w_h >= w_20 and w_c < w_20: is_match = True
-                            elif is_zone and w_50 > w_c > w_20: is_match = True
+                            # Must have been completely below EMA previously to be a "fresh touch"
+                            if is_touch_50 and w_prev_h < w_50_prev and w_h >= w_50 and w_c < w_50: is_match = True
+                            elif is_touch_20 and w_prev_h < w_20_prev and w_h >= w_20 and w_c < w_20: is_match = True
+                            elif is_zone and w_prev_c < w_20_prev and w_50 > w_c > w_20: is_match = True
 
                 elif tf_primary == "Weekly":
-                    # Weekly Trend (Checking Percentage Distance)
+                    # Weekly Trend
                     df_w = df_1d.resample('W-FRI').last().dropna()
                     if len(df_w) < 50: continue
                     w_c = df_w['Close'].iloc[-1]
@@ -180,53 +188,63 @@ if st.sidebar.button("Run Fast Scanner"):
                     if is_bull and ((w_c - w_50) / w_50) >= gap_decimal: trend_match = True
                     elif not is_bull and ((w_50 - w_c) / w_50) >= gap_decimal: trend_match = True
                         
-                    # Daily Pullback
+                    # Daily Pullback (FRESH TOUCH LOGIC)
                     if trend_match:
                         d_c, d_l, d_h = df_1d['Close'].iloc[-1], df_1d['Low'].iloc[-1], df_1d['High'].iloc[-1]
-                        d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                        d_20 = df_1d['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        d_prev_c, d_prev_l, d_prev_h = df_1d['Close'].iloc[-2], df_1d['Low'].iloc[-2], df_1d['High'].iloc[-2]
+                        
+                        d_50_series = df_1d['Close'].ewm(span=50, adjust=False).mean()
+                        d_20_series = df_1d['Close'].ewm(span=20, adjust=False).mean()
+                        
+                        d_50, d_50_prev = d_50_series.iloc[-1], d_50_series.iloc[-2]
+                        d_20, d_20_prev = d_20_series.iloc[-1], d_20_series.iloc[-2]
                         
                         if is_bull:
-                            if is_touch_50 and d_l <= d_50 and d_c > d_50: is_match = True
-                            elif is_touch_20 and d_l <= d_20 and d_c > d_20: is_match = True
-                            elif is_zone and d_50 < d_c < d_20: is_match = True
+                            if is_touch_50 and d_prev_l > d_50_prev and d_l <= d_50 and d_c > d_50: is_match = True
+                            elif is_touch_20 and d_prev_l > d_20_prev and d_l <= d_20 and d_c > d_20: is_match = True
+                            elif is_zone and d_prev_c > d_20_prev and d_50 < d_c < d_20: is_match = True
                         else:
-                            if is_touch_50 and d_h >= d_50 and d_c < d_50: is_match = True
-                            elif is_touch_20 and d_h >= d_20 and d_c < d_20: is_match = True
-                            elif is_zone and d_50 > d_c > d_20: is_match = True
+                            if is_touch_50 and d_prev_h < d_50_prev and d_h >= d_50 and d_c < d_50: is_match = True
+                            elif is_touch_20 and d_prev_h < d_20_prev and d_h >= d_20 and d_c < d_20: is_match = True
+                            elif is_zone and d_prev_c < d_20_prev and d_50 > d_c > d_20: is_match = True
 
                 elif tf_primary == "Daily":
-                    # Daily Trend (Checking Percentage Distance)
+                    # Daily Trend
                     d_c = df_1d['Close'].iloc[-1]
                     d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
                     
                     if is_bull and ((d_c - d_50) / d_50) >= gap_decimal: trend_match = True
                     elif not is_bull and ((d_50 - d_c) / d_50) >= gap_decimal: trend_match = True
                         
-                    # 15m Pullback
+                    # 15m Pullback (FRESH TOUCH LOGIC)
                     if trend_match and data_15m is not None:
                         df_15 = extract_data(data_15m, ticker)
                         if len(df_15) < 50: continue
                         
                         c_15, l_15, h_15 = df_15['Close'].iloc[-1], df_15['Low'].iloc[-1], df_15['High'].iloc[-1]
-                        ema50_15 = df_15['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                        ema20_15 = df_15['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+                        prev_c_15, prev_l_15, prev_h_15 = df_15['Close'].iloc[-2], df_15['Low'].iloc[-2], df_15['High'].iloc[-2]
+                        
+                        ema50_15_series = df_15['Close'].ewm(span=50, adjust=False).mean()
+                        ema20_15_series = df_15['Close'].ewm(span=20, adjust=False).mean()
+                        
+                        ema50_15, ema50_15_prev = ema50_15_series.iloc[-1], ema50_15_series.iloc[-2]
+                        ema20_15, ema20_15_prev = ema20_15_series.iloc[-1], ema20_15_series.iloc[-2]
                         
                         if is_bull:
-                            if is_touch_50 and l_15 <= ema50_15 and c_15 > ema50_15: is_match = True
-                            elif is_touch_20 and l_15 <= ema20_15 and c_15 > ema20_15: is_match = True
-                            elif is_zone and ema50_15 < c_15 < ema20_15: is_match = True
+                            if is_touch_50 and prev_l_15 > ema50_15_prev and l_15 <= ema50_15 and c_15 > ema50_15: is_match = True
+                            elif is_touch_20 and prev_l_15 > ema20_15_prev and l_15 <= ema20_15 and c_15 > ema20_15: is_match = True
+                            elif is_zone and prev_c_15 > ema20_15_prev and ema50_15 < c_15 < ema20_15: is_match = True
                         else:
-                            if is_touch_50 and h_15 >= ema50_15 and c_15 < ema50_15: is_match = True
-                            elif is_touch_20 and h_15 >= ema20_15 and c_15 < ema20_15: is_match = True
-                            elif is_zone and ema50_15 > c_15 > ema20_15: is_match = True
+                            if is_touch_50 and prev_h_15 < ema50_15_prev and h_15 >= ema50_15 and c_15 < ema50_15: is_match = True
+                            elif is_touch_20 and prev_h_15 < ema20_15_prev and h_15 >= ema20_15 and c_15 < ema20_15: is_match = True
+                            elif is_zone and prev_c_15 < ema20_15_prev and ema50_15 > c_15 > ema20_15: is_match = True
 
                 # --- RECORD MATCH ---
                 if is_match:
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
                         "Primary Trend": f"Gap \u2265 {trend_gap}% ({tf_primary})",
-                        "Pullback Setup": f"Matched ({tf_pullback})",
+                        "Pullback Setup": f"Fresh Entry ({tf_pullback})",
                         "Current Price": round(df_1d['Close'].iloc[-1], 2)
                     })
             except Exception:
@@ -237,7 +255,7 @@ if st.sidebar.button("Run Fast Scanner"):
     my_bar.empty()
     
     if results:
-        st.success(f"Found {len(results)} high-momentum pullbacks!")
+        st.success(f"Found {len(results)} fresh pullbacks!")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
         st.warning("No stocks met this strict momentum criteria right now.")
