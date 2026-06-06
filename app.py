@@ -47,20 +47,33 @@ is_bull = "Bullish" in market_phase
 # 3. Time Frame Selection
 tf_selection = st.sidebar.selectbox("3. Select Time Frame", ["1 Day", "1 Week", "1 Month", "3 Months"])
 
-# 4. Setup Condition
+# Dynamic Default Percentage based on Time Frame
+if tf_selection == "1 Day":
+    default_gap = 3.0
+elif tf_selection == "1 Week":
+    default_gap = 7.5  # Right between 7 and 8
+elif tf_selection == "1 Month":
+    default_gap = 11.0 # Right between 10 and 12
+else: # 3 Months
+    default_gap = 15.0
+
+# 4. Setup Condition & Momentum Gap
 st.sidebar.markdown("### 4. Setup Condition")
+trend_gap = st.sidebar.slider("Adjust % Distance from 50 EMA", min_value=1.0, max_value=25.0, value=default_gap, step=0.5)
+gap_decimal = trend_gap / 100.0
+
 if is_bull:
-    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection} timeframe:", [
-        f"a) Price > 3% above 50 EMA ({tf_selection})",
-        f"b) Price just touches 50 EMA ({tf_selection})"
+    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection}:", [
+        f"a) Price > {trend_gap}% above 50 EMA",
+        f"b) Price just touches 50 EMA"
     ])
 else:
-    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection} timeframe:", [
-        f"a) Price > 3% below 50 EMA ({tf_selection})",
-        f"b) Price just touches 50 EMA ({tf_selection})"
+    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection}:", [
+        f"a) Price > {trend_gap}% below 50 EMA",
+        f"b) Price just touches 50 EMA"
     ])
 
-is_gap = "3%" in setup_choice
+is_gap = ">" in setup_choice
 is_touch = "touches" in setup_choice
 
 # --- MAIN SCANNER LOGIC ---
@@ -78,10 +91,10 @@ if st.sidebar.button("Run Fast Scanner"):
     total_chunks = (len(tickers) // chunk_size) + 1
     
     # Determine data lookback needed to calculate a 50 EMA on the selected timeframe
-    if tf_selection == "3 Months": period_1d = "15y" # Need 12.5 years for 50 quarters
-    elif tf_selection == "1 Month": period_1d = "5y" # Need 4.2 years for 50 months
-    elif tf_selection == "1 Week": period_1d = "2y"  # Need 1 year for 50 weeks
-    else: period_1d = "1y"                           # Need 2.5 months for 50 days
+    if tf_selection == "3 Months": period_1d = "15y" 
+    elif tf_selection == "1 Month": period_1d = "5y" 
+    elif tf_selection == "1 Week": period_1d = "2y"  
+    else: period_1d = "1y"                           
     
     for chunk_idx in range(total_chunks):
         start_idx = chunk_idx * chunk_size
@@ -132,8 +145,8 @@ if st.sidebar.button("Run Fast Scanner"):
                 # --- APPLY LOGIC ---
                 if is_bull:
                     if is_gap:
-                        # Price is at least 3% above 50 EMA
-                        if (c - ema) / ema >= 0.03: 
+                        # Price is at least X% above 50 EMA
+                        if (c - ema) / ema >= gap_decimal: 
                             is_match = True
                     elif is_touch:
                         # Bullish Fresh Touch: Prev Low > Prev EMA, Current Low dips <= Current EMA, Close > EMA
@@ -141,8 +154,8 @@ if st.sidebar.button("Run Fast Scanner"):
                             is_match = True
                 else:
                     if is_gap:
-                        # Price is at least 3% below 50 EMA
-                        if (ema - c) / ema >= 0.03: 
+                        # Price is at least X% below 50 EMA
+                        if (ema - c) / ema >= gap_decimal: 
                             is_match = True
                     elif is_touch:
                         # Bearish Fresh Touch: Prev High < Prev EMA, Current High spikes >= Current EMA, Close < EMA
@@ -154,7 +167,7 @@ if st.sidebar.button("Run Fast Scanner"):
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
                         "Time Frame": tf_selection,
-                        "Condition Met": "Gap > 3%" if is_gap else "Fresh Touch",
+                        "Condition Met": f"Gap > {trend_gap}%" if is_gap else "Fresh Touch",
                         "Current Price": round(c, 2),
                         "50 EMA": round(ema, 2)
                     })
