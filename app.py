@@ -4,9 +4,9 @@ import pandas as pd
 import time
 
 # --- APP CONFIGURATION ---
-st.set_page_config(page_title="Fractal EMA Screener", layout="wide")
-st.title("📈 Advanced Multi-Timeframe EMA Screener")
-st.write("Dynamic timeframe auto-selection for precise pullbacks (Monthly -> Weekly -> Daily -> 15m).")
+st.set_page_config(page_title="Pure Momentum EMA Screener", layout="wide")
+st.title("📈 Pure Momentum EMA Screener")
+st.write("Focused single-timeframe scanner for 50 EMA momentum and fresh pullbacks.")
 
 # --- HELPER FUNCTIONS ---
 @st.cache_data(ttl=86400)
@@ -37,66 +37,31 @@ def extract_data(data_batch, ticker):
 # --- SIDEBAR UI LOGIC ---
 st.sidebar.header("Filter Settings")
 
-# 1. Index Selection
-selected_index = st.sidebar.selectbox("1. Select Index", ["Nifty 50", "Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
+# 1. Sector Selection
+selected_index = st.sidebar.selectbox("1. Select Sector / Index", ["Nifty 50", "Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
 
 # 2. Market Phase
-market_phase = st.sidebar.radio("2. Market Phase", ["Bullish (Uptrend)", "Bearish (Downtrend)"])
+market_phase = st.sidebar.radio("2. Market Phase", ["Bullish", "Bearish"])
 is_bull = "Bullish" in market_phase
 
-# 3. Primary Trend Selection (MOMENTUM GAP)
-st.sidebar.markdown("### 3. Primary Trend (Momentum Gap)")
-trend_gap = st.sidebar.slider("Minimum % Distance from 50 EMA", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
-gap_decimal = trend_gap / 100.0
+# 3. Time Frame Selection
+tf_selection = st.sidebar.selectbox("3. Select Time Frame", ["1 Day", "1 Week", "1 Month", "3 Months"])
 
+# 4. Setup Condition
+st.sidebar.markdown("### 4. Setup Condition")
 if is_bull:
-    primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        f"Price > 50 Monthly EMA (by at least {trend_gap}%)",
-        f"Price > 50 Weekly EMA (by at least {trend_gap}%)",
-        f"Price > 50 Daily EMA (by at least {trend_gap}%)"
+    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection} timeframe:", [
+        f"a) Price > 3% above 50 EMA ({tf_selection})",
+        f"b) Price just touches 50 EMA ({tf_selection})"
     ])
 else:
-    primary_trend = st.sidebar.radio("Select Anchor Trend", [
-        f"Price < 50 Monthly EMA (by at least {trend_gap}%)",
-        f"Price < 50 Weekly EMA (by at least {trend_gap}%)",
-        f"Price < 50 Daily EMA (by at least {trend_gap}%)"
+    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection} timeframe:", [
+        f"a) Price > 3% below 50 EMA ({tf_selection})",
+        f"b) Price just touches 50 EMA ({tf_selection})"
     ])
 
-# 4. Dynamic Pullback Sub-Menu
-st.sidebar.markdown("### 4. Pullback Setup (Auto-Selected TF)")
-
-if "Monthly" in primary_trend:
-    tf_primary = "Monthly"
-    tf_pullback = "Weekly"
-    st.sidebar.info("📉 Pullback TF: **Weekly**")
-    setup_choice = st.sidebar.radio("Select Setup:", [
-        "a). Price touches 50 EMA in Weekly timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in Weekly timeframe",
-        "c). Price touches 20 EMA in Weekly timeframe"
-    ])
-elif "Weekly" in primary_trend:
-    tf_primary = "Weekly"
-    tf_pullback = "Daily"
-    st.sidebar.info("📉 Pullback TF: **Daily**")
-    setup_choice = st.sidebar.radio("Select Setup:", [
-        "a). Price touches 50 EMA in Daily timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in Daily timeframe",
-        "c). Price touches 20 EMA in Daily timeframe"
-    ])
-else:
-    tf_primary = "Daily"
-    tf_pullback = "15m"
-    st.sidebar.info("📉 Pullback TF: **15 Minute**")
-    setup_choice = st.sidebar.radio("Select Setup:", [
-        "a). Price touches 50 EMA in 15 Min timeframe",
-        "b). Price within 20 EMA and 50 EMA zone in 15 Min timeframe",
-        "c). Price touches 20 EMA in 15 Min timeframe"
-    ])
-
-# Setup logic flags
-is_touch_50 = "touches 50 EMA" in setup_choice
-is_touch_20 = "touches 20 EMA" in setup_choice
-is_zone = "zone" in setup_choice
+is_gap = "3%" in setup_choice
+is_touch = "touches" in setup_choice
 
 # --- MAIN SCANNER LOGIC ---
 if st.sidebar.button("Run Fast Scanner"):
@@ -104,7 +69,7 @@ if st.sidebar.button("Run Fast Scanner"):
     if not tickers:
         st.stop()
         
-    st.info(f"Scanning {len(tickers)} stocks for {trend_gap}% {tf_primary} Trend Gap + ISOLATED FRESH {tf_pullback} Pullback...")
+    st.info(f"Scanning {len(tickers)} stocks on the {tf_selection} timeframe...")
     
     results = []
     my_bar = st.progress(0, text="Starting scan...")
@@ -112,10 +77,11 @@ if st.sidebar.button("Run Fast Scanner"):
     chunk_size = 100 
     total_chunks = (len(tickers) // chunk_size) + 1
     
-    # Determine how much daily data we need based on Primary Trend
-    if tf_primary == "Monthly": period_1d = "5y"
-    elif tf_primary == "Weekly": period_1d = "2y"
-    else: period_1d = "1y"
+    # Determine data lookback needed to calculate a 50 EMA on the selected timeframe
+    if tf_selection == "3 Months": period_1d = "15y" # Need 12.5 years for 50 quarters
+    elif tf_selection == "1 Month": period_1d = "5y" # Need 4.2 years for 50 months
+    elif tf_selection == "1 Week": period_1d = "2y"  # Need 1 year for 50 weeks
+    else: period_1d = "1y"                           # Need 2.5 months for 50 days
     
     for chunk_idx in range(total_chunks):
         start_idx = chunk_idx * chunk_size
@@ -126,161 +92,71 @@ if st.sidebar.button("Run Fast Scanner"):
             
         my_bar.progress(chunk_idx / total_chunks, text=f"Downloading batch {chunk_idx + 1} of {total_chunks}...")
         
-        # Download Daily Data
+        # Download Data
         data_1d = yf.download(current_batch, period=period_1d, interval="1d", group_by="ticker", threads=True, progress=False)
-        
-        # Download 15m Data ONLY if needed
-        data_15m = None
-        if tf_pullback == "15m":
-            data_15m = yf.download(current_batch, period="60d", interval="15m", group_by="ticker", threads=True, progress=False)
         
         for ticker in current_batch:
             try:
                 df_1d = extract_data(data_1d, ticker)
-                if len(df_1d) < 50: continue
+                if len(df_1d) < 10: continue
                 
+                # --- RESAMPLE BASED ON SELECTED TIMEFRAME ---
+                if tf_selection == "1 Day":
+                    df_tf = df_1d.copy()
+                elif tf_selection == "1 Week":
+                    df_tf = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                elif tf_selection == "1 Month":
+                    df_tf = df_1d.resample('ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+                elif tf_selection == "3 Months":
+                    df_tf = df_1d.resample('QE').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+
+                # Ensure we have at least 50 periods on this timeframe to calculate the EMA
+                if len(df_tf) < 50: 
+                    continue
+                
+                # --- EXTRACT CURRENT & PREVIOUS CANDLES ---
+                c = df_tf['Close'].iloc[-1]
+                l = df_tf['Low'].iloc[-1]
+                h = df_tf['High'].iloc[-1]
+                
+                prev_l = df_tf['Low'].iloc[-2]
+                prev_h = df_tf['High'].iloc[-2]
+                
+                # --- CALCULATE EMA ---
+                ema_series = df_tf['Close'].ewm(span=50, adjust=False).mean()
+                ema = ema_series.iloc[-1]
+                prev_ema = ema_series.iloc[-2]
+
                 is_match = False
-                trend_match = False
-                
-                # --- CALCULATE REQUIRED TIMEFRAMES ---
-                
-                if tf_primary == "Monthly":
-                    # Monthly Trend
-                    df_m = df_1d.resample('ME').last().dropna()
-                    if len(df_m) < 50: continue
-                    m_c = df_m['Close'].iloc[-1]
-                    m_50 = df_m['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                    
-                    if is_bull and ((m_c - m_50) / m_50) >= gap_decimal: trend_match = True
-                    elif not is_bull and ((m_50 - m_c) / m_50) >= gap_decimal: trend_match = True
-                        
-                    # Weekly Pullback (BULLETPROOF FRESH TOUCH LOGIC)
-                    if trend_match:
-                        df_w = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-                        
-                        # Current Candle
-                        w_c = df_w['Close'].iloc[-1]
-                        w_l = df_w['Low'].iloc[-1]
-                        w_h = df_w['High'].iloc[-1]
-                        
-                        # Previous Candle
-                        w_prev_c = df_w['Close'].iloc[-2]
-                        w_prev_l = df_w['Low'].iloc[-2]
-                        w_prev_h = df_w['High'].iloc[-2]
-                        
-                        # EMAs for Current and Previous
-                        w_50_series = df_w['Close'].ewm(span=50, adjust=False).mean()
-                        w_20_series = df_w['Close'].ewm(span=20, adjust=False).mean()
-                        
-                        w_50 = w_50_series.iloc[-1]
-                        w_50_prev = w_50_series.iloc[-2]
-                        
-                        w_20 = w_20_series.iloc[-1]
-                        w_20_prev = w_20_series.iloc[-2]
-                        
-                        if is_bull:
-                            # 1. Setup (Prev Low > Prev EMA) -> 2. Touch (Curr Low <= Curr EMA) -> 3. Bounce (Curr Close > Curr EMA)
-                            if is_touch_50 and (w_prev_l > w_50_prev) and (w_l <= w_50) and (w_c > w_50): is_match = True
-                            elif is_touch_20 and (w_prev_l > w_20_prev) and (w_l <= w_20) and (w_c > w_20): is_match = True
-                            # Zone Setup: Prev Close > Prev 20 EMA, Curr Close inside zone
-                            elif is_zone and (w_prev_c > w_20_prev) and (w_c < w_20) and (w_c > w_50): is_match = True
-                        else:
-                            # 1. Setup (Prev High < Prev EMA) -> 2. Touch (Curr High >= Curr EMA) -> 3. Reject (Curr Close < Curr EMA)
-                            if is_touch_50 and (w_prev_h < w_50_prev) and (w_h >= w_50) and (w_c < w_50): is_match = True
-                            elif is_touch_20 and (w_prev_h < w_20_prev) and (w_h >= w_20) and (w_c < w_20): is_match = True
-                            # Zone Setup: Prev Close < Prev 20 EMA, Curr Close inside zone
-                            elif is_zone and (w_prev_c < w_20_prev) and (w_c > w_20) and (w_c < w_50): is_match = True
 
-                elif tf_primary == "Weekly":
-                    # Weekly Trend
-                    df_w = df_1d.resample('W-FRI').last().dropna()
-                    if len(df_w) < 50: continue
-                    w_c = df_w['Close'].iloc[-1]
-                    w_50 = df_w['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                    
-                    if is_bull and ((w_c - w_50) / w_50) >= gap_decimal: trend_match = True
-                    elif not is_bull and ((w_50 - w_c) / w_50) >= gap_decimal: trend_match = True
-                        
-                    # Daily Pullback (BULLETPROOF FRESH TOUCH LOGIC)
-                    if trend_match:
-                        # Current Candle
-                        d_c = df_1d['Close'].iloc[-1]
-                        d_l = df_1d['Low'].iloc[-1]
-                        d_h = df_1d['High'].iloc[-1]
-                        
-                        # Previous Candle
-                        d_prev_c = df_1d['Close'].iloc[-2]
-                        d_prev_l = df_1d['Low'].iloc[-2]
-                        d_prev_h = df_1d['High'].iloc[-2]
-                        
-                        # EMAs for Current and Previous
-                        d_50_series = df_1d['Close'].ewm(span=50, adjust=False).mean()
-                        d_20_series = df_1d['Close'].ewm(span=20, adjust=False).mean()
-                        
-                        d_50 = d_50_series.iloc[-1]
-                        d_50_prev = d_50_series.iloc[-2]
-                        
-                        d_20 = d_20_series.iloc[-1]
-                        d_20_prev = d_20_series.iloc[-2]
-                        
-                        if is_bull:
-                            if is_touch_50 and (d_prev_l > d_50_prev) and (d_l <= d_50) and (d_c > d_50): is_match = True
-                            elif is_touch_20 and (d_prev_l > d_20_prev) and (d_l <= d_20) and (d_c > d_20): is_match = True
-                            elif is_zone and (d_prev_c > d_20_prev) and (d_c < d_20) and (d_c > d_50): is_match = True
-                        else:
-                            if is_touch_50 and (d_prev_h < d_50_prev) and (d_h >= d_50) and (d_c < d_50): is_match = True
-                            elif is_touch_20 and (d_prev_h < d_20_prev) and (d_h >= d_20) and (d_c < d_20): is_match = True
-                            elif is_zone and (d_prev_c < d_20_prev) and (d_c > d_20) and (d_c < d_50): is_match = True
-
-                elif tf_primary == "Daily":
-                    # Daily Trend
-                    d_c = df_1d['Close'].iloc[-1]
-                    d_50 = df_1d['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
-                    
-                    if is_bull and ((d_c - d_50) / d_50) >= gap_decimal: trend_match = True
-                    elif not is_bull and ((d_50 - d_c) / d_50) >= gap_decimal: trend_match = True
-                        
-                    # 15m Pullback (BULLETPROOF FRESH TOUCH LOGIC)
-                    if trend_match and data_15m is not None:
-                        df_15 = extract_data(data_15m, ticker)
-                        if len(df_15) < 50: continue
-                        
-                        # Current Candle
-                        c_15 = df_15['Close'].iloc[-1]
-                        l_15 = df_15['Low'].iloc[-1]
-                        h_15 = df_15['High'].iloc[-1]
-                        
-                        # Previous Candle
-                        prev_c_15 = df_15['Close'].iloc[-2]
-                        prev_l_15 = df_15['Low'].iloc[-2]
-                        prev_h_15 = df_15['High'].iloc[-2]
-                        
-                        # EMAs for Current and Previous
-                        ema50_15_series = df_15['Close'].ewm(span=50, adjust=False).mean()
-                        ema20_15_series = df_15['Close'].ewm(span=20, adjust=False).mean()
-                        
-                        ema50_15 = ema50_15_series.iloc[-1]
-                        ema50_15_prev = ema50_15_series.iloc[-2]
-                        
-                        ema20_15 = ema20_15_series.iloc[-1]
-                        ema20_15_prev = ema20_15_series.iloc[-2]
-                        
-                        if is_bull:
-                            if is_touch_50 and (prev_l_15 > ema50_15_prev) and (l_15 <= ema50_15) and (c_15 > ema50_15): is_match = True
-                            elif is_touch_20 and (prev_l_15 > ema20_15_prev) and (l_15 <= ema20_15) and (c_15 > ema20_15): is_match = True
-                            elif is_zone and (prev_c_15 > ema20_15_prev) and (c_15 < ema20_15) and (c_15 > ema50_15): is_match = True
-                        else:
-                            if is_touch_50 and (prev_h_15 < ema50_15_prev) and (h_15 >= ema50_15) and (c_15 < ema50_15): is_match = True
-                            elif is_touch_20 and (prev_h_15 < ema20_15_prev) and (h_15 >= ema20_15) and (c_15 < ema20_15): is_match = True
-                            elif is_zone and (prev_c_15 < ema20_15_prev) and (c_15 > ema20_15) and (c_15 < ema50_15): is_match = True
+                # --- APPLY LOGIC ---
+                if is_bull:
+                    if is_gap:
+                        # Price is at least 3% above 50 EMA
+                        if (c - ema) / ema >= 0.03: 
+                            is_match = True
+                    elif is_touch:
+                        # Bullish Fresh Touch: Prev Low > Prev EMA, Current Low dips <= Current EMA, Close > EMA
+                        if (prev_l > prev_ema) and (l <= ema) and (c > ema): 
+                            is_match = True
+                else:
+                    if is_gap:
+                        # Price is at least 3% below 50 EMA
+                        if (ema - c) / ema >= 0.03: 
+                            is_match = True
+                    elif is_touch:
+                        # Bearish Fresh Touch: Prev High < Prev EMA, Current High spikes >= Current EMA, Close < EMA
+                        if (prev_h < prev_ema) and (h >= ema) and (c < ema): 
+                            is_match = True
 
                 # --- RECORD MATCH ---
                 if is_match:
                     results.append({
                         "Ticker": ticker.replace(".NS", ""),
-                        "Primary Trend": f"Gap \u2265 {trend_gap}% ({tf_primary})",
-                        "Pullback Setup": f"Strict Isolated Entry ({tf_pullback})",
-                        "Current Price": round(df_1d['Close'].iloc[-1], 2)
+                        "Time Frame": tf_selection,
+                        "Condition Met": "Gap > 3%" if is_gap else "Fresh Touch",
+                        "Current Price": round(c, 2),
+                        "50 EMA": round(ema, 2)
                     })
             except Exception:
                 continue
@@ -290,7 +166,7 @@ if st.sidebar.button("Run Fast Scanner"):
     my_bar.empty()
     
     if results:
-        st.success(f"Found {len(results)} isolated fresh pullbacks!")
+        st.success(f"Scan Complete! Found {len(results)} stocks matching your criteria.")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.warning("No stocks met this strict momentum criteria right now.")
+        st.warning("Scan Complete. No stocks met this specific criteria.")
