@@ -1,185 +1,214 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import time
+import numpy as np
+from scipy.signal import argrelextrema
 
-# --- APP CONFIGURATION ---
-st.set_page_config(page_title="Pure Momentum EMA Screener", layout="wide")
-st.title("📈 Pure Momentum EMA Screener")
-st.write("Focused single-timeframe scanner for 50 EMA momentum and fresh pullbacks.")
+# --- PAGE CONFIGURATION ---
+st.set_page_config(page_title="HTF Matrix S&R Scanner", layout="wide", page_icon="🎯")
 
-# --- HELPER FUNCTIONS ---
+st.markdown("""
+    <style>
+    .main-title { font-size: 36px; font-weight: 800; color: #009688; margin-bottom: 0px; }
+    .sub-title { font-size: 15px; color: #78909C; margin-bottom: 25px; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown('<p class="main-title">🎯 Multi-Timeframe Matrix Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Tracks institutional Higher Timeframe (HTF) horizontal zones matching specific entry execution parameters.</p>', unsafe_allow_html=True)
+
+# --- INDEX SYMBOL DOWNLOAD ---
 @st.cache_data(ttl=86400)
-def get_nifty_tickers(index_name):
-    """Fetches exact official lists from NSE."""
+def load_symbols(index_name):
     urls = {
-        "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
-        "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
-        "Nifty Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
-        "Nifty Smallcap 250": "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
+        "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+        "NIFTY Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
+        "NIFTY Smallcap 250": "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv",
+        "NIFTY 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     }
     try:
         df = pd.read_csv(urls[index_name])
-        return (df['Symbol'].astype(str) + ".NS").tolist()
-    except Exception as e:
-        st.error(f"Failed to fetch list from NSE: {e}")
-        return []
+        return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
+    except Exception:
+        return ["RELIANCE.NS", "TCS.NS", "CIPLA.NS", "INFY.NS", "SBIN.NS"]
 
-def extract_data(data_batch, ticker):
-    """Safely extracts a single ticker's dataframe from a yfinance batch download."""
-    if isinstance(data_batch.columns, pd.MultiIndex):
-        if ticker not in data_batch.columns.get_level_values(0):
-            return pd.DataFrame()
-        return data_batch[ticker].dropna()
-    else:
-        return data_batch.dropna()
-
-# --- SIDEBAR UI LOGIC ---
-st.sidebar.header("Filter Settings")
-
-# 1. Sector Selection
-selected_index = st.sidebar.selectbox("1. Select Sector / Index", ["Nifty 50", "Nifty 500", "Nifty Midcap 100", "Nifty Smallcap 250"])
-
-# 2. Market Phase
-market_phase = st.sidebar.radio("2. Market Phase", ["Bullish", "Bearish"])
-is_bull = "Bullish" in market_phase
-
-# 3. Time Frame Selection
-tf_selection = st.sidebar.selectbox("3. Select Time Frame", ["1 Day", "1 Week", "1 Month", "3 Months"])
-
-# Dynamic Default Percentage based on Time Frame
-if tf_selection == "1 Day":
-    default_gap = 3.0
-elif tf_selection == "1 Week":
-    default_gap = 7.5  # Right between 7 and 8
-elif tf_selection == "1 Month":
-    default_gap = 11.0 # Right between 10 and 12
-else: # 3 Months
-    default_gap = 15.0
-
-# 4. Setup Condition & Momentum Gap
-st.sidebar.markdown("### 4. Setup Condition")
-trend_gap = st.sidebar.slider("Adjust % Distance from 50 EMA", min_value=1.0, max_value=25.0, value=default_gap, step=0.5)
-gap_decimal = trend_gap / 100.0
-
-if is_bull:
-    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection}:", [
-        f"a) Price > {trend_gap}% above 50 EMA",
-        f"b) Price just touches 50 EMA"
-    ])
-else:
-    setup_choice = st.sidebar.radio(f"Select setup for {tf_selection}:", [
-        f"a) Price > {trend_gap}% below 50 EMA",
-        f"b) Price just touches 50 EMA"
-    ])
-
-is_gap = ">" in setup_choice
-is_touch = "touches" in setup_choice
-
-# --- MAIN SCANNER LOGIC ---
-if st.sidebar.button("Run Fast Scanner"):
-    tickers = get_nifty_tickers(selected_index)
-    if not tickers:
-        st.stop()
+# --- DYNAMIC DATA RETRIEVAL ---
+@st.cache_data(show_spinner=False)
+def fetch_matrix_data(tickers, htf_selection):
+    # Select optimized intervals based on yfinance performance limitations
+    if htf_selection == "1 Day -> 15 Min":
+        period, interval = '60d', '15m'
+    elif htf_selection == "1 Week -> 1 Hour":
+        period, interval = '730d', '1h'
+    elif htf_selection == "1 Month -> 1 Day":
+        period, interval = '5y', '1d'
+    else:  # 3 Month -> 1 Week
+        period, interval = '10y', '1wk'
         
-    st.info(f"Scanning {len(tickers)} stocks on the {tf_selection} timeframe...")
-    
-    results = []
-    my_bar = st.progress(0, text="Starting scan...")
-    
-    chunk_size = 100 
-    total_chunks = (len(tickers) // chunk_size) + 1
-    
-    # Determine data lookback needed to calculate a 50 EMA on the selected timeframe
-    if tf_selection == "3 Months": period_1d = "15y" 
-    elif tf_selection == "1 Month": period_1d = "5y" 
-    elif tf_selection == "1 Week": period_1d = "2y"  
-    else: period_1d = "1y"                           
-    
-    for chunk_idx in range(total_chunks):
-        start_idx = chunk_idx * chunk_size
-        end_idx = min(start_idx + chunk_size, len(tickers))
-        current_batch = tickers[start_idx:end_idx]
+    data = yf.download(tickers, period=period, interval=interval, group_by='ticker', threads=True, progress=False)
+    return data
+
+def build_htf_dataframe(df_source, htf_selection):
+    """Derives the primary Higher Timeframe structure from incoming marketplace streams."""
+    if df_source.empty:
+        return pd.DataFrame()
         
-        if not current_batch: break
+    if htf_selection == "1 Day -> 15 Min":
+        # Group intraday 15-minute intervals to complete Day structures
+        return df_source.resample('1D').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    elif htf_selection == "1 Week -> 1 Hour":
+        return df_source.resample('1W').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    elif htf_selection == "1 Month -> 1 Day":
+        return df_source.resample('1ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    elif htf_selection == "3 Month -> 1 Week":
+        return df_source.resample('3ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    return df_source
+
+# --- MATRICES LOGIC ENGINE ---
+def process_structural_zones(df_htf, df_ltf, matrix_type, width_pct, lookback=5):
+    if len(df_htf) < 15: 
+        return None
+        
+    latest_close = df_ltf.iloc[-1]['Close']
+    latest_high = df_ltf.iloc[-1]['High']
+    latest_low = df_ltf.iloc[-1]['Low']
+    
+    # Isolate key market turns (structural highs and lows)
+    high_pivots = df_htf.iloc[argrelextrema(df_htf['High'].values, np.greater_equal, order=lookback)[0]]['High'].values
+    low_pivots = df_htf.iloc[argrelextrema(df_htf['Low'].values, np.less_equal, order=lookback)[0]]['Low'].values
+    
+    all_pivots = np.sort(np.concatenate((high_pivots, low_pivots)))
+    if len(all_pivots) == 0: 
+        return None
+        
+    # Group neighboring turn keys into unified horizontal zones
+    zones = []
+    active_cluster = [all_pivots[0]]
+    
+    for i in range(1, len(all_pivots)):
+        if (all_pivots[i] - active_cluster[0]) / active_cluster[0] <= (width_pct / 100.0):
+            active_cluster.append(all_pivots[i])
+        else:
+            if len(active_cluster) >= 3:
+                zones.append({
+                    'floor': min(active_cluster),
+                    'ceiling': max(active_cluster),
+                    'center': sum(active_cluster) / len(active_cluster),
+                    'touches': len(active_cluster)
+                })
+            active_cluster = [all_pivots[i]]
             
-        my_bar.progress(chunk_idx / total_chunks, text=f"Downloading batch {chunk_idx + 1} of {total_chunks}...")
+    if len(active_cluster) >= 3:
+        zones.append({
+            'floor': min(active_cluster), 
+            'ceiling': max(active_cluster), 
+            'center': sum(active_cluster) / len(active_cluster),
+            'touches': len(active_cluster)
+        })
+
+    # Validate structural setups against the selected mode
+    for zone in zones:
+        f, c = zone['floor'], zone['ceiling']
         
-        # Download Data
-        data_1d = yf.download(current_batch, period=period_1d, interval="1d", group_by="ticker", threads=True, progress=False)
+        if matrix_type == "Bullish Setups (Support)":
+            # Verification: Price hovering just inside or interacting directly with the base floor
+            if f * 0.99 <= latest_low <= c * 1.01:
+                return f"Testing HTF Support Zone (₹{round(f,1)} - ₹{round(c,1)})"
+            elif latest_close > c and latest_low <= c * 1.015:
+                return f"Role Reversal / Confirmed Support Bounce (Zone Center: ₹{round(zone['center'],1)})"
+                
+        elif matrix_type == "Bearish Setups (Resistance)":
+            # Verification: Price encountering ceiling friction or showing breakout rejection signs
+            if f * 0.99 <= latest_high <= c * 1.01:
+                return f"Testing HTF Resistance Zone (₹{round(f,1)} - ₹{round(c,1)})"
+            elif latest_close < f and latest_high >= f * 0.985:
+                return f"Confirmed Resistance Rejection (Zone Center: ₹{round(zone['center'],1)})"
+                
+    return None
+
+# --- CONTROL PANEL ---
+with st.sidebar:
+    st.header("1. Universe Selection")
+    index_choice = st.selectbox("Market Target", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Midcap 100", "NIFTY Smallcap 250", "NIFTY 500"])
+    
+    st.divider()
+    st.header("2. Timeframe Matrix Configuration")
+    matrix_selection = st.selectbox("Select HTF -> LTF Framework", [
+        "1 Day -> 15 Min",
+        "1 Week -> 1 Hour",
+        "1 Month -> 1 Day",
+        "3 Month -> 1 Week"
+    ])
+    
+    # Assign specific adaptive zone boundaries based on your parameters
+    if "1 Day" in matrix_selection:
+        default_width = 2.0  # 1% to 3% spectrum
+    elif "1 Week" in matrix_selection:
+        default_width = 4.0  # 3% to 5% spectrum
+    elif "1 Month" in matrix_selection:
+        default_width = 6.0  # 5% to 7% spectrum
+    else:
+        default_width = 8.5  # Macro 7% to 10% spectrum
         
-        for ticker in current_batch:
-            try:
-                df_1d = extract_data(data_1d, ticker)
-                if len(df_1d) < 10: continue
-                
-                # --- RESAMPLE BASED ON SELECTED TIMEFRAME ---
-                if tf_selection == "1 Day":
-                    df_tf = df_1d.copy()
-                elif tf_selection == "1 Week":
-                    df_tf = df_1d.resample('W-FRI').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-                elif tf_selection == "1 Month":
-                    df_tf = df_1d.resample('ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-                elif tf_selection == "3 Months":
-                    df_tf = df_1d.resample('QE').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
+    zone_width = st.slider("Target HTF Zone Width (%)", 0.5, 12.0, default_width, help="Matches structure width parameters to the chosen scale.")
+    
+    st.divider()
+    st.header("3. Market Direction")
+    bias_direction = st.radio("Scan Target Direction", ["Bullish Setups (Support)", "Bearish Setups (Resistance)"])
+    
+    st.divider()
+    run_scan = st.button("🚀 EXECUTE MATRIX SCAN", type="primary", use_container_width=True)
 
-                # Ensure we have at least 50 periods on this timeframe to calculate the EMA
-                if len(df_tf) < 50: 
-                    continue
-                
-                # --- EXTRACT CURRENT & PREVIOUS CANDLES ---
-                c = df_tf['Close'].iloc[-1]
-                l = df_tf['Low'].iloc[-1]
-                h = df_tf['High'].iloc[-1]
-                
-                prev_l = df_tf['Low'].iloc[-2]
-                prev_h = df_tf['High'].iloc[-2]
-                
-                # --- CALCULATE EMA ---
-                ema_series = df_tf['Close'].ewm(span=50, adjust=False).mean()
-                ema = ema_series.iloc[-1]
-                prev_ema = ema_series.iloc[-2]
+# Process symbols
+symbols_to_scan = load_symbols("NIFTY 50")[:10] if "Test" in index_choice else load_symbols(index_choice)
 
-                is_match = False
-
-                # --- APPLY LOGIC ---
-                if is_bull:
-                    if is_gap:
-                        # Price is at least X% above 50 EMA
-                        if (c - ema) / ema >= gap_decimal: 
-                            is_match = True
-                    elif is_touch:
-                        # Bullish Fresh Touch: Prev Low > Prev EMA, Current Low dips <= Current EMA, Close > EMA
-                        if (prev_l > prev_ema) and (l <= ema) and (c > ema): 
-                            is_match = True
-                else:
-                    if is_gap:
-                        # Price is at least X% below 50 EMA
-                        if (ema - c) / ema >= gap_decimal: 
-                            is_match = True
-                    elif is_touch:
-                        # Bearish Fresh Touch: Prev High < Prev EMA, Current High spikes >= Current EMA, Close < EMA
-                        if (prev_h < prev_ema) and (h >= ema) and (c < ema): 
-                            is_match = True
-
-                # --- RECORD MATCH ---
-                if is_match:
-                    results.append({
-                        "Ticker": ticker.replace(".NS", ""),
-                        "Time Frame": tf_selection,
-                        "Condition Met": f"Gap > {trend_gap}%" if is_gap else "Fresh Touch",
-                        "Current Price": round(c, 2),
-                        "50 EMA": round(ema, 2)
-                    })
-            except Exception:
+# --- PROCESSING SYSTEM ---
+if run_scan:
+    scanned_results = []
+    
+    with st.spinner(f"Acquiring required background price charts for analysis..."):
+        historical_dataset = fetch_matrix_data(symbols_to_scan, matrix_selection)
+        
+    progress_bar = st.progress(0, text="Deconstructing structural key levels...")
+    total_assets = len(symbols_to_scan)
+    
+    for idx, ticker in enumerate(symbols_to_scan):
+        progress_bar.progress((idx + 1) / total_assets, text=f"Processing multi-timeframe maps for {ticker}...")
+        
+        try:
+            # Extract standard tracking parameters per symbol
+            if total_assets > 1:
+                df_base = historical_dataset[ticker].dropna()
+            else:
+                df_base = historical_dataset.dropna()
+                
+            if df_base.empty:
                 continue
                 
-        time.sleep(0.5) 
-                
-    my_bar.empty()
+            # Isolate the high resolution execution dataframe (Lower Timeframe)
+            df_ltf = df_base.copy()
+            
+            # Formulate the major structural trend baseline (Higher Timeframe)
+            df_htf = build_htf_dataframe(df_base, matrix_selection)
+            
+            # Find matching criteria
+            findings = process_structural_zones(df_htf, df_ltf, bias_direction, zone_width)
+            
+            if findings:
+                scanned_results.append({
+                    "Ticker Symbol": ticker.replace('.NS', ''),
+                    "Identified Scenario": findings,
+                    "LTF Entry Price": round(df_ltf.iloc[-1]['Close'], 2)
+                })
+        except Exception:
+            pass
+            
+    progress_bar.empty()
     
-    if results:
-        st.success(f"Scan Complete! Found {len(results)} stocks matching your criteria.")
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+    # Display performance outcomes
+    if scanned_results:
+        display_dataframe = pd.DataFrame(scanned_results)
+        st.success(f"🎯 Analysis Complete! Uncovered **{len(display_dataframe)}** clear institutional set-ups.")
+        st.dataframe(display_dataframe, use_container_width=True, hide_index=True)
     else:
-        st.warning("Scan Complete. No stocks met this specific criteria.")
+        st.warning(f"No assets matching the structural criteria were found on the {matrix_selection} scale right now.")
