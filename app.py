@@ -14,8 +14,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🏛️ Pure Price Action S&R Matrix</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Zero Indicators. 100% Naked Chart Structural Zones mapped from HTF to LTF.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🏛️ Break & Retest PA Matrix</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Strict HTF-to-LTF structural zones with True Role Reversal detection.</p>', unsafe_allow_html=True)
 
 # --- LOAD SYMBOLS ---
 @st.cache_data(ttl=86400)
@@ -60,29 +60,29 @@ def build_htf(df, matrix_mode):
     return df
 
 # --- PURE PRICE ACTION ALGORITHM ---
-def process_pure_structure(df_htf, df_ltf, target_type, width_pct):
+def process_pure_structure(df_htf, df_ltf, target_type, min_width, max_width):
     if len(df_htf) < 15: return None
         
     latest_close = df_ltf.iloc[-1]['Close']
     latest_high = df_ltf.iloc[-1]['High']
     latest_low = df_ltf.iloc[-1]['Low']
     
-    # 1. Isolate Pure Swings (No Indicators, Just Raw Highs/Lows)
+    # 1. Isolate Pure Swings 
     peaks = df_htf.iloc[argrelextrema(df_htf['High'].values, np.greater_equal, order=5)[0]]['High'].values
     valleys = df_htf.iloc[argrelextrema(df_htf['Low'].values, np.less_equal, order=5)[0]]['Low'].values
     
     all_pivots = np.sort(np.concatenate((peaks, valleys)))
     if len(all_pivots) == 0: return None
         
-    # 2. Cluster Swings into Thick Zones
+    # 2. Cluster Swings into Thick Zones (Using Max Width as tolerance)
     zones = []
     current_zone = [all_pivots[0]]
     
     for i in range(1, len(all_pivots)):
-        if (all_pivots[i] - current_zone[0]) / current_zone[0] <= (width_pct / 100.0):
+        if (all_pivots[i] - current_zone[0]) / current_zone[0] <= (max_width / 100.0):
             current_zone.append(all_pivots[i])
         else:
-            if len(current_zone) >= 3: # Demand at least 3 touches to prove it's a real structural zone
+            if len(current_zone) >= 3:
                 zones.append({
                     'floor': min(current_zone),
                     'ceiling': max(current_zone),
@@ -93,25 +93,37 @@ def process_pure_structure(df_htf, df_ltf, target_type, width_pct):
     if len(current_zone) >= 3:
         zones.append({'floor': min(current_zone), 'ceiling': max(current_zone), 'center': sum(current_zone) / len(current_zone)})
 
-    # 3. Evaluate LTF Entry Context
+    # 3. Evaluate LTF Entry Context & Filter by Width
     for zone in zones:
         f, c = zone['floor'], zone['ceiling']
         
+        # Ensure the final zone size fits your strict Min/Max % rule
+        actual_width_pct = ((c - f) / f) * 100
+        # If zone is perfectly flat (0%), give it a tiny buffer to pass min check
+        if actual_width_pct == 0: actual_width_pct = 0.1 
+        if not (min_width <= actual_width_pct <= max_width): continue
+        
+        # Count structural history for Role Reversal checks
+        zone_peaks = len([p for p in peaks if f * 0.99 <= p <= c * 1.01])
+        zone_valleys = len([v for v in valleys if f * 0.99 <= v <= c * 1.01])
+        
         if target_type == "Support / Demand (Buy)":
-            # Is LTF price currently dipping into the HTF Support?
-            if f * 0.99 <= latest_low <= c * 1.01:
-                return f"LTF Entry: Inside HTF Support (₹{round(f,1)} - ₹{round(c,1)}) 🟢"
-            # Did it break resistance and is now pulling back to test it as support?
-            elif latest_close > c and latest_low <= c * 1.015:
-                return f"Role Reversal: Testing New Support (₹{round(zone['center'],1)}) 🔄"
+            # ROLE REVERSAL: Was it heavy resistance in the past? Did it break? Is it pulling back now?
+            if zone_peaks >= 2 and latest_close > c and f * 0.98 <= latest_low <= c * 1.02:
+                return f"Break & Retest: Old Resistance is now Support 🔄 (Zone: ₹{round(f,1)}-₹{round(c,1)})"
+                
+            # STANDARD SUPPORT: Price dipping into a floor
+            elif zone_valleys >= 2 and f * 0.99 <= latest_low <= c * 1.01:
+                return f"LTF Entry: Bouncing off HTF Support 🟢 (Zone: ₹{round(f,1)}-₹{round(c,1)})"
                 
         elif target_type == "Resistance / Supply (Sell)":
-            # Is LTF price currently rallying into the HTF Resistance?
-            if f * 0.99 <= latest_high <= c * 1.01:
-                return f"LTF Entry: Inside HTF Resistance (₹{round(f,1)} - ₹{round(c,1)}) 🔴"
-            # Did it break support and is now pulling back up to test it as resistance?
-            elif latest_close < f and latest_high >= f * 0.985:
-                return f"Role Reversal: Testing New Resistance (₹{round(zone['center'],1)}) 🔄"
+            # ROLE REVERSAL: Was it heavy support in the past? Did it break down? Is it rallying back now?
+            if zone_valleys >= 2 and latest_close < f and f * 0.98 <= latest_high <= c * 1.02:
+                return f"Break & Retest: Old Support is now Resistance 🔄 (Zone: ₹{round(f,1)}-₹{round(c,1)})"
+                
+            # STANDARD RESISTANCE: Price rallying into a ceiling
+            elif zone_peaks >= 2 and f * 0.99 <= latest_high <= c * 1.01:
+                return f"LTF Entry: Rejecting at HTF Resistance 🔴 (Zone: ₹{round(f,1)}-₹{round(c,1)})"
                 
     return None
 
@@ -129,13 +141,15 @@ with st.sidebar:
         "3 Month -> 1 Week"
     ])
     
-    # Auto-adjust zone thickness based on timeframe size
-    if "1 Day" in matrix_selection: default_width = 2.0
-    elif "1 Week" in matrix_selection: default_width = 4.0
-    elif "1 Month" in matrix_selection: default_width = 6.0
-    else: default_width = 8.5 
+    # Auto-adjust zone thickness defaults based on timeframe scale
+    if "1 Day" in matrix_selection: def_min, def_max = 1.0, 3.0
+    elif "1 Week" in matrix_selection: def_min, def_max = 3.0, 5.0
+    elif "1 Month" in matrix_selection: def_min, def_max = 5.0, 7.0
+    else: def_min, def_max = 7.0, 10.0
         
-    zone_width = st.slider("Zone Thickness Limit (%)", 0.5, 12.0, default_width)
+    st.markdown("**Zone Size Limits (%)**")
+    zone_limits = st.slider("Min & Max Width", 0.1, 15.0, (def_min, def_max))
+    min_w, max_w = zone_limits
     
     st.divider()
     st.header("3. Setup Direction")
@@ -168,7 +182,7 @@ if run_scan:
             df_ltf = df_base.copy()
             df_htf = build_htf(df_base, matrix_selection)
             
-            status = process_pure_structure(df_htf, df_ltf, bias_direction, zone_width)
+            status = process_pure_structure(df_htf, df_ltf, bias_direction, min_w, max_w)
             
             if status:
                 results.append({
