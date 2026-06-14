@@ -5,22 +5,22 @@ import numpy as np
 from scipy.signal import argrelextrema
 from scipy.stats import linregress
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="3rd Touch Confluence Scanner", layout="wide", page_icon="🎯")
+# --- PAGE ARCHITECTURE & UI STYLING ---
+st.set_page_config(page_title="Institutional Trap Matrix Engine", layout="wide", page_icon="🪤")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 38px; font-weight: 800; color: #E65100; margin-bottom: 0px; }
-    .sub-title { font-size: 16px; color: #607D8B; margin-bottom: 25px; }
+    .main-title { font-size: 38px; font-weight: 800; color: #0288D1; margin-bottom: 0px; }
+    .sub-title { font-size: 16px; color: #546E7A; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🎯 The 3rd Touch Confluence Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Exclusively hunts for High-Probability 3rd Touch approaches and counts structural anchors.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🪤 Dual-Structure Liquidity Sweep Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Tracks institutional traps across matching Horizontal Zones and Diagonal Trendlines simultaneously.</p>', unsafe_allow_html=True)
 
-# --- LOAD SYMBOLS ---
+# --- SECURITIES DIRECTORY RETRIEVAL ---
 @st.cache_data(ttl=86400)
-def load_symbols(index_name):
+def load_market_symbols(index_name):
     urls = {
         "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
         "NIFTY Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
@@ -31,177 +31,179 @@ def load_symbols(index_name):
         df = pd.read_csv(urls[index_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["TATASTEEL.NS", "BIOCON.NS", "RELIANCE.NS", "TCS.NS", "SBIN.NS"]
+        return ["BHARTIARTL.NS", "BIOCON.NS", "TATASTEEL.NS", "RELIANCE.NS", "SBIN.NS"]
 
-# --- DATA FETCHING ---
+# --- MULTI-TIMEFRAME DATA PIPELINE ---
 @st.cache_data(show_spinner=False)
-def fetch_data(tickers, matrix_mode):
-    if matrix_mode == "1 Day -> 15 Min": period, interval = '60d', '15m'
-    elif matrix_mode == "1 Week -> 1 Hour": period, interval = '730d', '1h'
-    elif matrix_mode == "1 Month -> 1 Day": period, interval = '5y', '1d'
-    else: period, interval = '10y', '1wk'
-        
-    return yf.download(tickers, period=period, interval=interval, group_by='ticker', threads=True, progress=False)
+def fetch_framework_datasets(tickers, structural_matrix):
+    if structural_matrix == "Weekly HTF -> Daily LTF":
+        df_htf = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', threads=True, progress=False)
+        df_ltf = yf.download(tickers, period='1y', interval='1d', group_by='ticker', threads=True, progress=False)
+    else: # Monthly HTF -> Daily/Weekly LTF Framework
+        df_htf = yf.download(tickers, period='10y', interval='1mo', group_by='ticker', threads=True, progress=False)
+        df_ltf = yf.download(tickers, period='3y', interval='1d', group_by='ticker', threads=True, progress=False)
+    return df_htf, df_ltf
 
-def build_htf(df, matrix_mode):
-    if df.empty: return df
-    if matrix_mode == "1 Day -> 15 Min": return df.resample('1D').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    elif matrix_mode == "1 Week -> 1 Hour": return df.resample('1W').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    elif matrix_mode == "1 Month -> 1 Day": return df.resample('1ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    elif matrix_mode == "3 Month -> 1 Week": return df.resample('3ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
-    return df
-
-# --- 3RD TOUCH ALGORITHM WITH TOUCH COUNTING ---
-def process_3rd_touch(df_htf, df_ltf, target_type, min_width, max_width):
-    if len(df_htf) < 20: return None
+# --- COMPREHENSIVE SWEEP ANALYSIS ENGINE ---
+def execute_sweep_analysis(df_htf, df_ltf, system_bias, min_zone_w, max_zone_w):
+    if len(df_htf) < 25 or len(df_ltf) < 5:
+        return None
         
-    latest_close = df_ltf.iloc[-1]['Close']
-    latest_high = df_ltf.iloc[-1]['High']
-    latest_low = df_ltf.iloc[-1]['Low']
-    current_idx = len(df_htf) - 1
+    latest_ltf_close = df_ltf.iloc[-1]['Close']
+    latest_ltf_high = df_ltf.iloc[-1]['High']
+    latest_ltf_low = df_ltf.iloc[-1]['Low']
     
-    # 1. Isolate Pure Swings (Pivots)
-    peak_indices = argrelextrema(df_htf['High'].values, np.greater_equal, order=5)[0]
-    valley_indices = argrelextrema(df_htf['Low'].values, np.less_equal, order=5)[0]
+    current_htf_idx = len(df_htf) - 1
     
-    if len(peak_indices) < 2 or len(valley_indices) < 2: return None
+    # 1. Map Out Major Swing Points (Pivots) on HTF
+    peak_points = argrelextrema(df_htf['High'].values, np.greater_equal, order=5)[0]
+    valley_points = argrelextrema(df_htf['Low'].values, np.less_equal, order=5)[0]
     
-    peaks = df_htf.iloc[peak_indices]['High'].values
-    valleys = df_htf.iloc[valley_indices]['Low'].values
+    # =========================================================================
+    # CONDITION A: DIAGONAL TRENDLINE GEOMETRY
+    # =========================================================================
+    if system_bias == "Bullish Sweeps (Support)" and len(valley_points) >= 2:
+        v_idx = valley_points[-2:]
+        v_vals = df_htf.iloc[v_idx]['Low'].values
+        slope, intercept, _, _, _ = linregress(v_idx, v_vals)
+        
+        if slope > 0: # Ascending Support Trendline
+            projected_diagonal = (slope * current_htf_idx) + intercept
+            # Validate Sweep: LTF Low went below the line, but LTF Close recovered above it
+            if latest_ltf_low < projected_diagonal and latest_ltf_close > projected_diagonal:
+                return f"Diagonal Sweep: Pierced Ascending Trendline (Value: ₹{round(projected_diagonal,1)}) 📈"
+                
+    elif system_bias == "Bearish Sweeps (Resistance)" and len(peak_points) >= 2:
+        p_idx = peak_points[-2:]
+        p_vals = df_htf.iloc[p_idx]['High'].values
+        slope, intercept, _, _, _ = linregress(p_idx, p_vals)
+        
+        if slope < 0: # Descending Resistance Trendline
+            projected_diagonal = (slope * current_htf_idx) + intercept
+            # Validate Sweep: LTF High went above the line, but LTF Close accepted below it
+            if latest_ltf_high > projected_diagonal and latest_ltf_close < projected_diagonal:
+                return f"Diagonal Sweep: Pierced Descending Trendline (Value: ₹{round(projected_diagonal,1)}) 📉"
+
+    # =========================================================================
+    # CONDITION B: HORIZONTAL ZONE GEOMETRY
+    # =========================================================================
+    all_htf_swings = np.sort(np.concatenate((df_htf.iloc[peak_points]['High'].values, df_htf.iloc[valley_points]['Low'].values)))
+    if len(all_htf_swings) == 0:
+        return None
+        
+    horizontal_zones = []
+    active_cluster = [all_htf_swings[0]]
     
-    # 2. HORIZONTAL ZONES
-    all_pivots = np.sort(np.concatenate((peaks, valleys)))
-    zones = []
-    current_zone = [all_pivots[0]]
-    
-    for i in range(1, len(all_pivots)):
-        if (all_pivots[i] - current_zone[0]) / current_zone[0] <= (max_width / 100.0):
-            current_zone.append(all_pivots[i])
+    for i in range(1, len(all_htf_swings)):
+        if (all_htf_swings[i] - active_cluster[0]) / active_cluster[0] <= (max_zone_w / 100.0):
+            active_cluster.append(all_htf_swings[i])
         else:
-            if len(current_zone) >= 2: 
-                zones.append({'floor': min(current_zone), 'ceiling': max(current_zone)})
-            current_zone = [all_pivots[i]]
-    if len(current_zone) >= 2:
-        zones.append({'floor': min(current_zone), 'ceiling': max(current_zone)})
+            if len(active_cluster) >= 2:
+                horizontal_zones.append({'floor': min(active_cluster), 'ceiling': max(active_cluster)})
+            active_cluster = [all_htf_swings[i]]
+    if len(active_cluster) >= 2:
+        horizontal_zones.append({'floor': min(active_cluster), 'ceiling': max(active_cluster)})
 
-    # 3. DIAGONAL TRENDLINES 
-    recent_valley_idx = valley_indices[-2:]
-    recent_valleys = valleys[-2:]
-    slope_sup, intercept_sup, _, _, _ = linregress(recent_valley_idx, recent_valleys)
-    projected_trend_support = (slope_sup * current_idx) + intercept_sup
-    
-    recent_peak_idx = peak_indices[-2:]
-    recent_peaks = peaks[-2:]
-    slope_res, intercept_res, _, _, _ = linregress(recent_peak_idx, recent_peaks)
-    projected_trend_resistance = (slope_res * current_idx) + intercept_res
-
-    # 4. EVALUATE & COUNT TOUCHES
-    for zone in zones:
+    for zone in horizontal_zones:
         f, c = zone['floor'], zone['ceiling']
-        actual_width_pct = ((c - f) / f) * 100
-        if actual_width_pct == 0: actual_width_pct = 0.1 
-        if not (min_width <= actual_width_pct <= max_width): continue
-        
-        # Count structural anchors 
-        zone_peaks = len([p for p in peaks if f * 0.99 <= p <= c * 1.01])
-        zone_valleys = len([v for v in valleys if f * 0.99 <= v <= c * 1.01])
-        
-        if target_type == "Support / Demand (Buy)":
-            is_3rd_horiz = (zone_valleys >= 2) and (f * 0.99 <= latest_low <= c * 1.02) and (latest_close > f)
-            is_3rd_trend = (slope_sup > 0) and (projected_trend_support * 0.99 <= latest_low <= projected_trend_support * 1.02) and (latest_close > projected_trend_support * 0.99)
+        zone_span_pct = ((c - f) / f) * 100
+        if zone_span_pct == 0: 
+            zone_span_pct = 0.1
             
-            if is_3rd_horiz and is_3rd_trend:
-                # Return the highest structural count backing this confluence
-                return {"status": f"🔥 3RD TOUCH CONFLUENCE: Trendline & Horizontal (₹{round(f,1)})", "touch_count": max(2, zone_valleys)}
-            elif is_3rd_trend:
-                return {"status": f"3rd Touch Approach: Ascending Trendline (₹{round(projected_trend_support, 1)})", "touch_count": 2}
-            elif is_3rd_horiz:
-                return {"status": f"3rd Touch Approach: Horizontal Support (₹{round(f,1)}-₹{round(c,1)})", "touch_count": zone_valleys}
-                
-        elif target_type == "Resistance / Supply (Sell)":
-            is_3rd_horiz = (zone_peaks >= 2) and (f * 0.98 <= latest_high <= c * 1.01) and (latest_close < c)
-            is_3rd_trend = (slope_res < 0) and (projected_trend_resistance * 0.98 <= latest_high <= projected_trend_resistance * 1.01) and (latest_close < projected_trend_resistance * 1.01)
+        if not (min_zone_w <= zone_span_pct <= max_zone_w):
+            continue
             
-            if is_3rd_horiz and is_3rd_trend:
-                return {"status": f"🔥 3RD TOUCH CONFLUENCE: Trendline & Horizontal (₹{round(c,1)})", "touch_count": max(2, zone_peaks)}
-            elif is_3rd_trend:
-                return {"status": f"3rd Touch Approach: Descending Trendline (₹{round(projected_trend_resistance, 1)})", "touch_count": 2}
-            elif is_3rd_horiz:
-                return {"status": f"3rd Touch Approach: Horizontal Resistance (₹{round(f,1)}-₹{round(c,1)})", "touch_count": zone_peaks}
-                
+        if system_bias == "Bullish Sweeps (Support)":
+            # Count historical floor validations to confirm stability
+            floor_touches = len([v for v in df_htf.iloc[valley_points]['Low'].values if f * 0.99 <= v <= c * 1.01])
+            if floor_touches >= 2:
+                # Sweep check: LTF Low breaches the zone floor, but LTF Close recovers safely inside/above
+                if latest_ltf_low < f and latest_ltf_close > f:
+                    return f"Horizontal Sweep: Cleared Support Base Floor (₹{round(f,1)} - ₹{round(c,1)}) 🟢"
+                    
+        elif system_bias == "Bearish Sweeps (Resistance)":
+            # Count historical ceiling validations to confirm stability
+            ceiling_touches = len([p for p in df_htf.iloc[peak_points]['High'].values if f * 0.99 <= p <= c * 1.01])
+            if ceiling_touches >= 2:
+                # Sweep check: LTF High punches past the ceiling, but LTF Close pulls back below
+                if latest_ltf_high > c and latest_ltf_close < c:
+                    return f"Horizontal Sweep: Cleared Resistance Base Ceiling (₹{round(f,1)} - ₹{round(c,1)}) 🔴"
+
     return None
 
-# --- UI CONTROL PANEL ---
+# --- GRAPHICAL INTERFACE WORKSPACE ---
 with st.sidebar:
-    st.header("1. Market Selection")
-    index_choice = st.selectbox("Index Target", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Midcap 100", "NIFTY Smallcap 250", "NIFTY 500"])
+    st.header("1. Framework Settings")
+    market_universe = st.selectbox("Select Index", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Midcap 100", "NIFTY Smallcap 250", "NIFTY 500"])
     
     st.divider()
-    st.header("2. Structural Matrix")
-    matrix_selection = st.selectbox("HTF Map -> LTF Entry", [
-        "1 Day -> 15 Min",
-        "1 Week -> 1 Hour",
-        "1 Month -> 1 Day",
-        "3 Month -> 1 Week"
+    st.header("2. Structural Horizon Matrix")
+    horizon_matrix = st.selectbox("Framework Mapping", [
+        "Weekly HTF -> Daily LTF",
+        "Monthly HTF -> Daily LTF"
     ])
     
-    if "1 Day" in matrix_selection: def_min, def_max = 1.0, 3.0
-    elif "1 Week" in matrix_selection: def_min, def_max = 3.0, 5.0
-    elif "1 Month" in matrix_selection: def_min, def_max = 5.0, 7.0
-    else: def_min, def_max = 7.0, 10.0
+    # Pre-configure responsive defaults matching structural scaling laws
+    if "Weekly" in horizon_matrix:
+        initial_min, initial_max = 2.0, 4.0
+    else:
+        initial_min, initial_max = 5.0, 8.0
         
-    st.markdown("**Horizontal Zone Limits (%)**")
-    zone_limits = st.slider("Min & Max Width", 0.1, 15.0, (def_min, def_max))
-    min_w, max_w = zone_limits
+    st.markdown("**HTF Cluster Window Constraints (%)**")
+    adaptive_bounds = st.slider("Min & Max Structural Bounds", 0.1, 15.0, (initial_min, initial_max))
+    min_pct_w, max_pct_w = adaptive_bounds
     
     st.divider()
-    st.header("3. Setup Direction")
-    bias_direction = st.radio("Hunt For 3rd Touch:", ["Support / Demand (Buy)", "Resistance / Supply (Sell)"])
+    st.header("3. Targeted Liquidity Flow")
+    execution_bias = st.radio("Hunt Objective Type", ["Bullish Sweeps (Support)", "Bearish Sweeps (Resistance)"])
     
     st.divider()
-    run_scan = st.button("🚀 EXECUTE 3RD TOUCH SCAN", type="primary", use_container_width=True)
+    trigger_processing = st.button("🚀 EXECUTE SCAN ENGINE", type="primary", use_container_width=True)
 
-symbols_to_scan = load_symbols("NIFTY 50")[:10] if "Test" in index_choice else load_symbols(index_choice)
+# Define processing queue depth
+target_symbols = load_market_symbols("NIFTY 50")[:10] if "Test" in market_universe else load_market_symbols(market_universe)
 
 # --- EXECUTION SYSTEM ---
-if run_scan:
-    results = []
+if trigger_processing:
+    identified_setups = []
     
-    with st.spinner(f"Mapping structural anchors..."):
-        raw_data = fetch_data(symbols_to_scan, matrix_selection)
+    with st.spinner("Extracting multi-dimensional baseline chart data modules..."):
+        htf_bulk_dataset, ltf_bulk_dataset = fetch_framework_datasets(target_symbols, horizon_matrix)
         
-    bar = st.progress(0, text="Hunting for 3rd Touch setups...")
-    total = len(symbols_to_scan)
+    execution_progress = st.progress(0, text="Analyzing trend lines and structural clusters...")
+    total_processing_queue = len(target_symbols)
     
-    for idx, ticker in enumerate(symbols_to_scan):
-        bar.progress((idx + 1) / total, text=f"Analyzing {ticker}...")
+    for idx, ticker in enumerate(target_symbols):
+        execution_progress.progress((idx + 1) / total_processing_queue, text=f"Processing multi-timeframe mapping maps for {ticker}...")
         
         try:
-            if total > 1: df_base = raw_data[ticker].dropna()
-            else: df_base = raw_data.dropna()
+            if total_processing_queue > 1:
+                df_htf_module = htf_bulk_dataset[ticker].dropna()
+                df_ltf_module = ltf_bulk_dataset[ticker].dropna()
+            else:
+                df_htf_module = htf_bulk_dataset.dropna()
+                df_ltf_module = ltf_bulk_dataset.dropna()
                 
-            if df_base.empty: continue
+            if df_htf_module.empty or df_ltf_module.empty:
+                continue
                 
-            df_ltf = df_base.copy()
-            df_htf = build_htf(df_base, matrix_selection)
+            structural_status = execute_sweep_analysis(df_htf_module, df_ltf_module, execution_bias, min_pct_w, max_pct_w)
             
-            outcome = process_3rd_touch(df_htf, df_ltf, bias_direction, min_w, max_w)
-            
-            if outcome:
-                results.append({
-                    "Ticker": ticker.replace('.NS', ''),
-                    "Setup Found": outcome["status"],
-                    "Previous Valid Touches": outcome["touch_count"],
-                    "LTF Current Price": round(df_ltf.iloc[-1]['Close'], 2)
+            if structural_status:
+                identified_setups.append({
+                    "Ticker Symbol": ticker.replace('.NS', ''),
+                    "Institutional Footprint": structural_status,
+                    "Live Execution Price": round(df_ltf_module.iloc[-1]['Close'], 2)
                 })
         except Exception:
             pass
             
-    bar.empty()
+    execution_progress.empty()
     
-    if results:
-        df_display = pd.DataFrame(results)
-        st.success(f"🎯 Analysis Complete! Uncovered **{len(df_display)}** High-Probability 3rd Touch Setups.")
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
+    # Present computational analytical outputs
+    if identified_setups:
+        output_table = pd.DataFrame(identified_setups)
+        st.success(f"🎯 Analysis Complete! Uncovered **{len(output_table)}** clear multi-timeframe traps matching your requirements.")
+        st.dataframe(output_table, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No strict 3rd touch approaches found matching this matrix right now.")
+        st.warning("No assets are exhibiting lower-timeframe liquidity grabs at higher-timeframe boundaries right now.")
