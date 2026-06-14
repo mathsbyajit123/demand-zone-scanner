@@ -3,199 +3,205 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.signal import argrelextrema
+from scipy.stats import linregress
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Pure Extreme Divergence", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Master SMC Confluence", layout="wide", page_icon="👑")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 38px; font-weight: 800; color: #E91E63; margin-bottom: 0px; }
-    .sub-title { font-size: 16px; color: #607D8B; margin-bottom: 25px; }
+    .main-title { font-size: 38px; font-weight: 800; color: #FFD700; margin-bottom: 0px; }
+    .sub-title { font-size: 16px; color: #E0E0E0; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">⚡ Pure Extreme RSI Divergence Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Zero Support/Resistance noise. Scans strictly for targeted, deep RSI divergences (Regular & Hidden).</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">👑 The Master Confluence Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">HTF Sweep -> LTF Breakout -> Momentum > 50 -> Safe Entry.</p>', unsafe_allow_html=True)
 
-# --- SECURITIES MAPPING ARCHIVE ---
+# --- MARKET SYMBOLS ---
 @st.cache_data(ttl=86400)
-def load_market_symbols(category):
+def load_symbols(index_name):
     urls = {
-        "NIFTY 50": "ind_nifty50list.csv",
-        "NIFTY Bank": "ind_niftybanklist.csv",
-        "NIFTY IT": "ind_niftyitlist.csv",
-        "NIFTY Auto": "ind_niftyautolist.csv",
-        "NIFTY Metal": "ind_niftymetallist.csv",
-        "NIFTY Pharma": "ind_niftypharmalist.csv",
-        "NIFTY FMCG": "ind_niftyfmcglist.csv",
-        "NIFTY Realty": "ind_niftyrealtylist.csv",
-        "NIFTY Energy": "ind_niftyenergylist.csv",
-        "NIFTY 500": "ind_nifty500list.csv"
+        "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+        "NIFTY Bank": "https://archives.nseindia.com/content/indices/ind_niftybanklist.csv",
+        "NIFTY Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
+        "NIFTY 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     }
-    base_url = "https://archives.nseindia.com/content/indices/"
     try:
-        df = pd.read_csv(base_url + urls[category])
+        df = pd.read_csv(urls[index_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        fallbacks = {
-            "NIFTY Bank": ["HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS", "KOTAKBANK.NS"],
-            "NIFTY IT": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS"],
-            "NIFTY Auto": ["TATAMOTORS.NS", "M&M.NS", "MARUTI.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS"]
-        }
-        return fallbacks.get(category, ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "SBIN.NS"])
+        return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS"]
 
-# --- MARKET DATA RETRIEVAL PIPELINE ---
+# --- DATA PIPELINE ---
 @st.cache_data(show_spinner=False)
-def fetch_ticker_records(tickers, timeframe):
-    if timeframe == '15m': period, interval = '60d', '15m'
-    elif timeframe == '1h': period, interval = '730d', '1h'
-    elif timeframe in ['1d', '1wk']: period, interval = '5y', timeframe
-    else: period, interval = '10y', '1mo'
-    return yf.download(tickers, period=period, interval=interval, group_by='ticker', threads=True, progress=False)
+def fetch_master_data(tickers, matrix_mode):
+    if matrix_mode == "1 Day HTF -> 15 Min LTF":
+        df_htf = yf.download(tickers, period='2y', interval='1d', group_by='ticker', threads=True, progress=False)
+        df_ltf = yf.download(tickers, period='60d', interval='15m', group_by='ticker', threads=True, progress=False)
+    else: # 1 Week HTF -> 1 Day LTF
+        df_htf = yf.download(tickers, period='5y', interval='1wk', group_by='ticker', threads=True, progress=False)
+        df_ltf = yf.download(tickers, period='2y', interval='1d', group_by='ticker', threads=True, progress=False)
+    return df_htf, df_ltf
 
-def calculate_rsi(price_series, period=14):
-    delta = price_series.diff()
+def calculate_rsi(series, period=14):
+    delta = series.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + gain / loss))
 
-# --- PURE DIVERGENCE CORE ENGINE ---
-def analyze_pure_divergence(df, hunt_mode, rsi_t1, rsi_t2, lookback_order=5):
-    if len(df) < 35: 
+# --- MASTER LOGIC ENGINE ---
+def evaluate_master_setup(df_htf, df_ltf, max_zone_w):
+    if len(df_htf) < 30 or len(df_ltf) < 20: 
         return None
 
-    df['RSI'] = calculate_rsi(df['Close'])
-    df = df.dropna()
-    if df.empty: 
-        return None
+    df_ltf['RSI'] = calculate_rsi(df_ltf['Close'])
+    df_htf = df_htf.dropna()
+    df_ltf = df_ltf.dropna()
+    
+    if df_htf.empty or df_ltf.empty: return None
 
-    # 1. Isolate Structural High/Low Turning Points
-    peak_points = argrelextrema(df['High'].values, np.greater_equal, order=lookback_order)[0]
-    valley_points = argrelextrema(df['Low'].values, np.less_equal, order=lookback_order)[0]
+    # Current State
+    current_ltf_idx = len(df_ltf) - 1
+    latest_ltf = df_ltf.iloc[-1]
+    prev_ltf = df_ltf.iloc[-2]
 
-    # =========================================================================
-    # BULLISH DIVERGENCES (Using Valleys)
-    # =========================================================================
-    if "Bullish" in hunt_mode:
-        if len(valley_points) < 2: return None
-        v1, v2 = valley_points[-2], valley_points[-1]
-        
-        # Prevent matching levels that are too close or radically disconnected
-        if v2 - v1 < 4 or v2 - v1 > 60: return None
+    # ==========================================
+    # STEP 1: HTF SUPPORT MAPPING
+    # ==========================================
+    htf_valley_idx = argrelextrema(df_htf['Low'].values, np.less_equal, order=5)[0]
+    if len(htf_valley_idx) < 2: return None
+    
+    htf_valleys = df_htf['Low'].iloc[htf_valley_idx].values
+    all_swings = np.sort(htf_valleys)
+    
+    valid_support_floor = None
+    valid_support_ceiling = None
+    
+    # Cluster valleys into zones
+    current_zone = [all_swings[0]]
+    for i in range(1, len(all_swings)):
+        if (all_swings[i] - current_zone[0]) / current_zone[0] <= (max_zone_w / 100.0):
+            current_zone.append(all_swings[i])
+        else:
+            if len(current_zone) >= 2:
+                valid_support_floor = min(current_zone)
+                valid_support_ceiling = max(current_zone)
+            current_zone = [all_swings[i]]
             
-        price_v1, price_v2 = df['Low'].iloc[v1], df['Low'].iloc[v2]
-        rsi_v1, rsi_v2 = df['RSI'].iloc[v1], df['RSI'].iloc[v2]
-        
-        # Enforce the strict depth values you requested (e.g., T1 <= 25, T2 <= 35)
-        if rsi_v1 <= rsi_t1 and rsi_v2 <= rsi_t2:
-            
-            if hunt_mode == "Regular Bullish":
-                # Price Lower Low, RSI Higher Low
-                if price_v2 < price_v1 and rsi_v2 > rsi_v1:
-                    return {"signal": "Regular Bullish 🟢", "price": price_v2, "rsi1": rsi_v1, "rsi2": rsi_v2}
-                    
-            elif hunt_mode == "Hidden Bullish":
-                # Price Higher Low, RSI Lower Low
-                if price_v2 > price_v1 and rsi_v2 < rsi_v1:
-                    return {"signal": "Hidden Bullish 🚀", "price": price_v2, "rsi1": rsi_v1, "rsi2": rsi_v2}
+    if len(current_zone) >= 2 and valid_support_floor is None:
+        valid_support_floor = min(current_zone)
+        valid_support_ceiling = max(current_zone)
 
-    # =========================================================================
-    # BEARISH DIVERGENCES (Using Peaks)
-    # =========================================================================
-    elif "Bearish" in hunt_mode:
-        if len(peak_points) < 2: return None
-        p1, p2 = peak_points[-2], peak_points[-1]
-        
-        if p2 - p1 < 4 or p2 - p1 > 60: return None
+    if valid_support_floor is None: return None
+
+    # ==========================================
+    # STEP 2: THE LIQUIDITY SWEEP (TRAP)
+    # ==========================================
+    # Look at recent LTF candles. Did price drop below the HTF floor, then recover?
+    recent_ltf_candles = df_ltf.tail(15) 
+    sweep_confirmed = False
+    sweep_low = float('inf')
+    
+    for idx in range(len(recent_ltf_candles)):
+        c = recent_ltf_candles.iloc[idx]
+        # Pierced the floor, but closed above the floor
+        if c['Low'] < valid_support_floor and c['Close'] > valid_support_floor:
+            sweep_confirmed = True
+            sweep_low = min(sweep_low, c['Low'])
             
-        price_p1, price_p2 = df['High'].iloc[p1], df['High'].iloc[p2]
-        rsi_p1, rsi_p2 = df['RSI'].iloc[p1], df['RSI'].iloc[p2]
+    if not sweep_confirmed: return None
+
+    # ==========================================
+    # STEP 3: LTF TRENDLINE BREAKOUT
+    # ==========================================
+    ltf_peak_idx = argrelextrema(df_ltf['High'].values, np.greater_equal, order=4)[0]
+    if len(ltf_peak_idx) < 2: return None
+    
+    # Draw descending resistance line
+    recent_peaks_idx = ltf_peak_idx[-2:]
+    recent_peaks_vals = df_ltf['High'].iloc[recent_peaks_idx].values
+    
+    slope, intercept, _, _, _ = linregress(recent_peaks_idx, recent_peaks_vals)
+    
+    if slope >= 0: return None # Must be a descending trendline
+    
+    projected_resistance = (slope * current_ltf_idx) + intercept
+
+    # Did we just break above it?
+    if prev_ltf['Close'] < projected_resistance and latest_ltf['Close'] > projected_resistance:
         
-        # Enforce the strict height values (e.g., T1 >= 75, T2 >= 65)
-        if rsi_p1 >= rsi_t1 and rsi_p2 >= rsi_t2:
+        # ==========================================
+        # STEP 4: MOMENTUM & CANDLE HEALTH
+        # ==========================================
+        if latest_ltf['RSI'] > 50:
             
-            if hunt_mode == "Regular Bearish":
-                # Price Higher High, RSI Lower High
-                if price_p2 > price_p1 and rsi_p2 < rsi_p1:
-                    return {"signal": "Regular Bearish 🔴", "price": price_p2, "rsi1": rsi_p1, "rsi2": rsi_p2}
-                    
-            elif hunt_mode == "Hidden Bearish":
-                # Price Lower High, RSI Higher High
-                if price_p2 < price_p1 and rsi_p2 > rsi_p1:
-                    return {"signal": "Hidden Bearish 🩸", "price": price_p2, "rsi1": rsi_p1, "rsi2": rsi_p2}
+            body = latest_ltf['Close'] - latest_ltf['Open']
+            rng = latest_ltf['High'] - latest_ltf['Low'] if latest_ltf['High'] != latest_ltf['Low'] else 0.001
+            
+            # Healthy green candle (body is > 55% of the total candle size)
+            if body > 0 and (body / rng) > 0.55:
+                
+                # Calculate R/R Distance
+                entry_price = latest_ltf['Close']
+                risk_amt = entry_price - sweep_low
+                
+                return {
+                    "signal": "🔥 Master Setup Active",
+                    "entry": entry_price,
+                    "sl": sweep_low,
+                    "risk_pct": (risk_amt / entry_price) * 100
+                }
 
     return None
 
-# --- GRAPHICAL CONTROL DASHBOARD ---
+# --- UI DASHBOARD ---
 with st.sidebar:
-    st.header("1. Target Market Map")
-    selected_sector = st.selectbox("Market Sector Index", [
-        "NIFTY 50", "NIFTY Bank", "NIFTY IT", "NIFTY Auto", 
-        "NIFTY Metal", "NIFTY Pharma", "NIFTY FMCG", "NIFTY Realty", 
-        "NIFTY Energy", "NIFTY 500"
-    ])
+    st.header("1. Target Universe")
+    selected_sector = st.selectbox("Market Index", ["Test Scan (10 Stocks)", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
     
     st.divider()
-    st.header("2. Execution Scale")
-    selected_tf = st.selectbox("Timeframe Window", ["15m", "1h", "1d", "1wk", "1mo"])
+    st.header("2. Execution Matrix")
+    matrix_selection = st.selectbox("HTF Map -> LTF Entry", ["1 Day HTF -> 15 Min LTF", "1 Week HTF -> 1 Day LTF"])
     
     st.divider()
-    st.header("3. Divergence Type")
-    execution_bias = st.selectbox("Hunt Objective:", [
-        "Regular Bullish", "Hidden Bullish", 
-        "Regular Bearish", "Hidden Bearish"
-    ])
+    st.info("**Execution Logic:**\n1. Find HTF Support\n2. Confirm Liquidity Sweep (Trap)\n3. LTF Trendline Breakout\n4. Breakout Candle RSI > 50\n5. Stop Loss = Bottom of Sweep")
     
     st.divider()
-    st.header("4. Strict RSI Thresholds")
-    st.markdown("*Set how deep or high the RSI touches must be.*")
-    
-    if "Bullish" in execution_bias:
-        st.info("Values must be LESS THAN OR EQUAL to these targets.")
-        touch_1_limit = st.slider("1st Touch (Deep Limit) e.g., 25", 10.0, 45.0, 25.0)
-        touch_2_limit = st.slider("2nd Touch (Shallow Limit) e.g., 35", 15.0, 50.0, 35.0)
-    else:
-        st.info("Values must be GREATER THAN OR EQUAL to these targets.")
-        touch_1_limit = st.slider("1st Touch (High Limit) e.g., 75", 55.0, 90.0, 75.0)
-        touch_2_limit = st.slider("2nd Touch (Shallow Limit) e.g., 65", 50.0, 85.0, 65.0)
-        
-    st.divider()
-    trigger_processing = st.button("🚀 EXECUTE PURE DVG SCAN", type="primary", use_container_width=True)
+    run_scan = st.button("🚀 EXECUTE MASTER SCAN", type="primary", use_container_width=True)
 
-target_symbols = load_market_symbols(selected_sector)
+target_symbols = load_symbols("NIFTY 50")[:10] if "Test" in selected_sector else load_symbols(selected_sector)
 
-# --- COMPUTE PROCESSING SEQUENCE ---
-if trigger_processing:
+# --- PROCESSING SYSTEM ---
+if run_scan:
     scanned_opportunities = []
     
-    with st.spinner(f"Downloading historical datasets for {selected_sector}..."):
-        raw_market_candles = fetch_ticker_records(target_symbols, selected_tf)
+    with st.spinner("Downloading multi-timeframe structural data..."):
+        htf_raw, ltf_raw = fetch_master_data(target_symbols, matrix_selection)
         
-    execution_progress = st.progress(0, text="Hunting for extreme targeted divergences...")
+    execution_progress = st.progress(0, text="Evaluating institutional traps and breakouts...")
     total_symbols = len(target_symbols)
     
     for idx, ticker in enumerate(target_symbols):
-        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing RSI depths for {ticker}...")
+        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing order flow for {ticker}...")
         
         try:
             if total_symbols > 1:
-                df_ticker_block = raw_market_candles[ticker].copy()
+                df_h = htf_raw[ticker].copy()
+                df_l = ltf_raw[ticker].copy()
             else:
-                df_ticker_block = raw_market_candles.copy()
+                df_h = htf_raw.copy()
+                df_l = ltf_raw.copy()
                 
-            analysis_outcome = analyze_pure_divergence(
-                df_ticker_block, execution_bias, 
-                touch_1_limit, touch_2_limit
-            )
+            outcome = evaluate_master_setup(df_h, df_l, max_zone_w=4.0)
             
-            if analysis_outcome:
+            if outcome:
                 scanned_opportunities.append({
                     "Ticker Symbol": ticker.replace('.NS', ''),
-                    "Signal Type": analysis_outcome["signal"],
-                    "Trigger Price": round(analysis_outcome["price"], 2),
-                    "Touch 1 (Extreme RSI)": round(analysis_outcome["rsi1"], 1),
-                    "Touch 2 (Recent RSI)": round(analysis_outcome["rsi2"], 1)
+                    "Status": outcome["signal"],
+                    "Entry Price": round(outcome["entry"], 2),
+                    "Strict Stop Loss": round(outcome["sl"], 2),
+                    "Risk % to SL": f"{round(outcome['risk_pct'], 2)}%"
                 })
         except Exception:
             pass
@@ -204,7 +210,8 @@ if trigger_processing:
     
     if scanned_opportunities:
         display_dataframe = pd.DataFrame(scanned_opportunities)
-        st.success(f"🎯 Analysis Complete! Uncovered **{len(display_dataframe)}** perfect depth divergences.")
+        st.success(f"🎯 Analysis Complete! Uncovered **{len(display_dataframe)}** flawless institutional setups.")
         st.dataframe(display_dataframe, use_container_width=True, hide_index=True)
+        st.balloons()
     else:
-        st.warning(f"No assets meet your extreme RSI depth requirements today.")
+        st.warning("No assets met all 5 strict conditions today. The market hasn't sprung the trap yet.")
