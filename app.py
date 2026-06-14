@@ -6,7 +6,7 @@ from scipy.signal import argrelextrema
 from scipy.stats import linregress
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Advanced Confluence Scanner", layout="wide", page_icon="📐")
+st.set_page_config(page_title="3rd Touch Confluence Scanner", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
@@ -15,8 +15,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">📐 Trendline & Zonal Confluence Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Hunts for exact intersections where Diagonal Trendlines meet Horizontal Zones.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 The 3rd Touch Confluence Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Exclusively hunts for High-Probability 3rd Touch approaches and counts structural anchors.</p>', unsafe_allow_html=True)
 
 # --- LOAD SYMBOLS ---
 @st.cache_data(ttl=86400)
@@ -31,7 +31,7 @@ def load_symbols(index_name):
         df = pd.read_csv(urls[index_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["BIOCON.NS", "RELIANCE.NS", "TCS.NS", "CIPLA.NS", "SBIN.NS"]
+        return ["TATASTEEL.NS", "BIOCON.NS", "RELIANCE.NS", "TCS.NS", "SBIN.NS"]
 
 # --- DATA FETCHING ---
 @st.cache_data(show_spinner=False)
@@ -51,8 +51,8 @@ def build_htf(df, matrix_mode):
     elif matrix_mode == "3 Month -> 1 Week": return df.resample('3ME').agg({'Open':'first', 'High':'max', 'Low':'min', 'Close':'last'}).dropna()
     return df
 
-# --- PURE PRICE ACTION ALGORITHM ---
-def process_confluence(df_htf, df_ltf, target_type, min_width, max_width):
+# --- 3RD TOUCH ALGORITHM WITH TOUCH COUNTING ---
+def process_3rd_touch(df_htf, df_ltf, target_type, min_width, max_width):
     if len(df_htf) < 20: return None
         
     latest_close = df_ltf.iloc[-1]['Close']
@@ -64,12 +64,12 @@ def process_confluence(df_htf, df_ltf, target_type, min_width, max_width):
     peak_indices = argrelextrema(df_htf['High'].values, np.greater_equal, order=5)[0]
     valley_indices = argrelextrema(df_htf['Low'].values, np.less_equal, order=5)[0]
     
-    if len(peak_indices) < 3 or len(valley_indices) < 3: return None
+    if len(peak_indices) < 2 or len(valley_indices) < 2: return None
     
     peaks = df_htf.iloc[peak_indices]['High'].values
     valleys = df_htf.iloc[valley_indices]['Low'].values
     
-    # 2. HORIZONTAL ZONES (Clustering)
+    # 2. HORIZONTAL ZONES
     all_pivots = np.sort(np.concatenate((peaks, valleys)))
     zones = []
     current_zone = [all_pivots[0]]
@@ -78,57 +78,56 @@ def process_confluence(df_htf, df_ltf, target_type, min_width, max_width):
         if (all_pivots[i] - current_zone[0]) / current_zone[0] <= (max_width / 100.0):
             current_zone.append(all_pivots[i])
         else:
-            if len(current_zone) >= 2:
+            if len(current_zone) >= 2: 
                 zones.append({'floor': min(current_zone), 'ceiling': max(current_zone)})
             current_zone = [all_pivots[i]]
     if len(current_zone) >= 2:
         zones.append({'floor': min(current_zone), 'ceiling': max(current_zone)})
 
-    # 3. DIAGONAL TRENDLINES (Linear Regression on last 3-4 pivots)
-    # Valleys for Support Trendline
-    recent_valley_idx = valley_indices[-4:]
-    recent_valleys = valleys[-4:]
-    slope_sup, intercept_sup, r_val_sup, _, _ = linregress(recent_valley_idx, recent_valleys)
+    # 3. DIAGONAL TRENDLINES 
+    recent_valley_idx = valley_indices[-2:]
+    recent_valleys = valleys[-2:]
+    slope_sup, intercept_sup, _, _, _ = linregress(recent_valley_idx, recent_valleys)
     projected_trend_support = (slope_sup * current_idx) + intercept_sup
     
-    # Peaks for Resistance Trendline
-    recent_peak_idx = peak_indices[-4:]
-    recent_peaks = peaks[-4:]
-    slope_res, intercept_res, r_val_res, _, _ = linregress(recent_peak_idx, recent_peaks)
+    recent_peak_idx = peak_indices[-2:]
+    recent_peaks = peaks[-2:]
+    slope_res, intercept_res, _, _, _ = linregress(recent_peak_idx, recent_peaks)
     projected_trend_resistance = (slope_res * current_idx) + intercept_res
 
-    # 4. EVALUATE SETUP (Confluence)
+    # 4. EVALUATE & COUNT TOUCHES
     for zone in zones:
         f, c = zone['floor'], zone['ceiling']
         actual_width_pct = ((c - f) / f) * 100
         if actual_width_pct == 0: actual_width_pct = 0.1 
         if not (min_width <= actual_width_pct <= max_width): continue
         
+        # Count structural anchors 
+        zone_peaks = len([p for p in peaks if f * 0.99 <= p <= c * 1.01])
+        zone_valleys = len([v for v in valleys if f * 0.99 <= v <= c * 1.01])
+        
         if target_type == "Support / Demand (Buy)":
-            # Is price near Horizontal Support?
-            near_horiz_sup = f * 0.98 <= latest_low <= c * 1.02
-            # Is price near Diagonal Trendline Support?
-            near_trend_sup = projected_trend_support * 0.98 <= latest_low <= projected_trend_support * 1.02
+            is_3rd_horiz = (zone_valleys >= 2) and (f * 0.99 <= latest_low <= c * 1.02) and (latest_close > f)
+            is_3rd_trend = (slope_sup > 0) and (projected_trend_support * 0.99 <= latest_low <= projected_trend_support * 1.02) and (latest_close > projected_trend_support * 0.99)
             
-            if near_horiz_sup and near_trend_sup and slope_sup > 0:
-                return f"🔥 PERFECT CONFLUENCE: Horizontal Zone (₹{round(f,1)}) + Ascending Trendline"
-            elif near_horiz_sup:
-                return f"Horizontal Support Zone Bounce (₹{round(f,1)}-₹{round(c,1)})"
-            elif near_trend_sup and slope_sup > 0:
-                return f"Ascending Trendline Support Bounce (₹{round(projected_trend_support, 1)})"
+            if is_3rd_horiz and is_3rd_trend:
+                # Return the highest structural count backing this confluence
+                return {"status": f"🔥 3RD TOUCH CONFLUENCE: Trendline & Horizontal (₹{round(f,1)})", "touch_count": max(2, zone_valleys)}
+            elif is_3rd_trend:
+                return {"status": f"3rd Touch Approach: Ascending Trendline (₹{round(projected_trend_support, 1)})", "touch_count": 2}
+            elif is_3rd_horiz:
+                return {"status": f"3rd Touch Approach: Horizontal Support (₹{round(f,1)}-₹{round(c,1)})", "touch_count": zone_valleys}
                 
         elif target_type == "Resistance / Supply (Sell)":
-            # Is price near Horizontal Resistance?
-            near_horiz_res = f * 0.98 <= latest_high <= c * 1.02
-            # Is price near Diagonal Trendline Resistance?
-            near_trend_res = projected_trend_resistance * 0.98 <= latest_high <= projected_trend_resistance * 1.02
+            is_3rd_horiz = (zone_peaks >= 2) and (f * 0.98 <= latest_high <= c * 1.01) and (latest_close < c)
+            is_3rd_trend = (slope_res < 0) and (projected_trend_resistance * 0.98 <= latest_high <= projected_trend_resistance * 1.01) and (latest_close < projected_trend_resistance * 1.01)
             
-            if near_horiz_res and near_trend_res and slope_res < 0:
-                return f"🔥 PERFECT CONFLUENCE: Horizontal Zone (₹{round(c,1)}) + Descending Trendline"
-            elif near_horiz_res:
-                return f"Horizontal Resistance Zone Rejection (₹{round(f,1)}-₹{round(c,1)})"
-            elif near_trend_res and slope_res < 0:
-                return f"Descending Trendline Resistance Rejection (₹{round(projected_trend_resistance, 1)})"
+            if is_3rd_horiz and is_3rd_trend:
+                return {"status": f"🔥 3RD TOUCH CONFLUENCE: Trendline & Horizontal (₹{round(c,1)})", "touch_count": max(2, zone_peaks)}
+            elif is_3rd_trend:
+                return {"status": f"3rd Touch Approach: Descending Trendline (₹{round(projected_trend_resistance, 1)})", "touch_count": 2}
+            elif is_3rd_horiz:
+                return {"status": f"3rd Touch Approach: Horizontal Resistance (₹{round(f,1)}-₹{round(c,1)})", "touch_count": zone_peaks}
                 
     return None
 
@@ -157,10 +156,10 @@ with st.sidebar:
     
     st.divider()
     st.header("3. Setup Direction")
-    bias_direction = st.radio("Hunt For:", ["Support / Demand (Buy)", "Resistance / Supply (Sell)"])
+    bias_direction = st.radio("Hunt For 3rd Touch:", ["Support / Demand (Buy)", "Resistance / Supply (Sell)"])
     
     st.divider()
-    run_scan = st.button("🚀 EXECUTE CONFLUENCE SCAN", type="primary", use_container_width=True)
+    run_scan = st.button("🚀 EXECUTE 3RD TOUCH SCAN", type="primary", use_container_width=True)
 
 symbols_to_scan = load_symbols("NIFTY 50")[:10] if "Test" in index_choice else load_symbols(index_choice)
 
@@ -168,10 +167,10 @@ symbols_to_scan = load_symbols("NIFTY 50")[:10] if "Test" in index_choice else l
 if run_scan:
     results = []
     
-    with st.spinner(f"Calculating diagonal slopes and horizontal grids..."):
+    with st.spinner(f"Mapping structural anchors..."):
         raw_data = fetch_data(symbols_to_scan, matrix_selection)
         
-    bar = st.progress(0, text="Processing geometrical confluences...")
+    bar = st.progress(0, text="Hunting for 3rd Touch setups...")
     total = len(symbols_to_scan)
     
     for idx, ticker in enumerate(symbols_to_scan):
@@ -186,12 +185,13 @@ if run_scan:
             df_ltf = df_base.copy()
             df_htf = build_htf(df_base, matrix_selection)
             
-            status = process_confluence(df_htf, df_ltf, bias_direction, min_w, max_w)
+            outcome = process_3rd_touch(df_htf, df_ltf, bias_direction, min_w, max_w)
             
-            if status:
+            if outcome:
                 results.append({
                     "Ticker": ticker.replace('.NS', ''),
-                    "Setup Found": status,
+                    "Setup Found": outcome["status"],
+                    "Previous Valid Touches": outcome["touch_count"],
                     "LTF Current Price": round(df_ltf.iloc[-1]['Close'], 2)
                 })
         except Exception:
@@ -201,7 +201,7 @@ if run_scan:
     
     if results:
         df_display = pd.DataFrame(results)
-        st.success(f"🎯 Analysis Complete! Uncovered **{len(df_display)}** structural setups.")
+        st.success(f"🎯 Analysis Complete! Uncovered **{len(df_display)}** High-Probability 3rd Touch Setups.")
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No naked chart setups found matching this exact matrix right now.")
+        st.warning(f"No strict 3rd touch approaches found matching this matrix right now.")
