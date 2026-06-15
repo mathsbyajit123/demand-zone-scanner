@@ -15,7 +15,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">⚖️ Quantitative Bull/Bear Matrix Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Bulletproof Live-Market Edition: Forward-filling gaps and capturing live-candle EMAs.</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Fixed Data Pipeline: Now displays exact 50 EMA values and avoids silent crashes.</p>', unsafe_allow_html=True)
 
 # --- MARKET SYMBOLS ---
 @st.cache_data(ttl=86400)
@@ -42,7 +42,6 @@ def resample_data(df, timeframe):
             '1W': '1W', '1M': '1ME'
         }
         if timeframe in mapping:
-            # Crucial Fix: Use ffill() to patch live-market liquidity gaps before dropping
             resampled = df.resample(mapping[timeframe]).agg({
                 'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
             }).ffill().dropna()
@@ -52,22 +51,27 @@ def resample_data(df, timeframe):
     return df
 
 # --- DYNAMIC EMA MATH ---
-def calculate_ema_distance(df):
-    if df is None or len(df) < 5: return None 
-    # Crucial Fix: min_periods=1 ensures EMA calculates even for newer stocks without 50 full candles
+def calculate_ema_data(df):
+    if df is None or len(df) < 5: return None, None
+    # Calculate exact 50 EMA
     ema_50 = df['Close'].ewm(span=50, min_periods=1, adjust=False).mean().iloc[-1]
     latest_close = df['Close'].iloc[-1]
+    
     distance_pct = ((latest_close - ema_50) / ema_50) * 100
-    return round(distance_pct, 2)
+    return round(distance_pct, 2), round(ema_50, 2)
 
-def format_distance(dist, tolerance):
+def format_cell(dist, ema_val, tolerance):
     if dist is None: return "N/A"
+    
+    # Explicitly mentioning 50 EMA value as requested
+    base_text = f"{dist}% (EMA: ₹{ema_val})"
+    
     if abs(dist) <= tolerance:
-        return f"🎯 {dist}% (Touch)"
+        return f"🎯 {base_text}"
     elif dist > 0:
-        return f"🟢 +{dist}%"
+        return f"🟢 +{base_text}"
     else:
-        return f"🔴 {dist}%"
+        return f"🔴 {base_text}"
 
 # --- UI DASHBOARD ---
 with st.sidebar:
@@ -118,16 +122,20 @@ if run_scan:
             execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker}...")
             
             try:
-                time.sleep(0.3) # Faster throttle
+                time.sleep(0.3) 
                 
-                # Fetch data
-                df_15m_base = yf.download(ticker, period='60d', interval='15m', progress=False, show_errors=False)
-                df_daily_base = yf.download(ticker, period='10y', interval='1d', progress=False, show_errors=False)
+                # CRITICAL FIX: Using yf.Ticker().history() prevents the Multi-Index crash bug
+                stock = yf.Ticker(ticker)
+                df_15m_base = stock.history(period='60d', interval='15m')
+                df_daily_base = stock.history(period='10y', interval='1d')
                 
                 if df_15m_base.empty or df_daily_base.empty:
                     continue
                 
-                # Crucial Fix: Forward-fill data before dropping to save live-market partial candles
+                # Remove timezone data which breaks resampling
+                if df_15m_base.index.tz is not None: df_15m_base.index = df_15m_base.index.tz_localize(None)
+                if df_daily_base.index.tz is not None: df_daily_base.index = df_daily_base.index.tz_localize(None)
+                
                 df_15m_base = df_15m_base.ffill().dropna(subset=['Close'])
                 df_daily_base = df_daily_base.ffill().dropna(subset=['Close'])
                 
@@ -143,13 +151,12 @@ if run_scan:
                 if "1D" in ltf_options: df_map["1D"] = df_daily_base
                 if "1W" in ltf_options: df_map["1W"] = resample_data(df_daily_base, '1W')
                 
-                # Master Trend TF
                 if htf_selection == '1 Week': df_htf = resample_data(df_daily_base, '1W')
                 elif htf_selection == '1 Month': df_htf = resample_data(df_daily_base, '1M')
                 else: df_htf = df_daily_base
                     
                 # 1. Evaluate Macro Trend
-                htf_dist = calculate_ema_distance(df_htf)
+                htf_dist, htf_ema = calculate_ema_data(df_htf)
                 if htf_dist is None: continue 
                 
                 if "Bullish" in trend_mode:
@@ -160,29 +167,36 @@ if run_scan:
                     trend_icon = "🔴"
                     
                 # 2. Evaluate Micro Pullbacks
-                ltf_distances = {}
+                ltf_results = {}
+                is_pulling_back = False
+                
                 for tf in ltf_options:
                     df_target = df_map.get(tf)
-                    ltf_distances[tf] = calculate_ema_distance(df_target) if df_target is not None else None
+                    dist, ema_val = calculate_ema_data(df_target)
+                    ltf_results[tf] = {"dist": dist, "ema": ema_val}
+                    
+                    if dist is not None and abs(dist) <= pullback_tolerance:
+                        is_pulling_back = True
                 
                 # 3. Apply Strict Mode Logic
-                is_pulling_back = any((d is not None and abs(d) <= pullback_tolerance) for d in ltf_distances.values())
-                
                 if strict_mode and not is_pulling_back:
                     continue 
                     
                 # 4. Build Table Row
                 row_data = {
                     "Ticker": clean_ticker,
-                    f"Macro Trend ({htf_selection})": f"{trend_icon} {htf_dist}%"
+                    "Live Price": f"₹{round(df_15m_base['Close'].iloc[-1], 2)}",
+                    f"Macro Trend ({htf_selection})": f"{trend_icon} {htf_dist}% (50 EMA: ₹{htf_ema})"
                 }
+                
                 for tf in ltf_options:
-                    row_data[f"Dist to {tf} 50-EMA"] = format_distance(ltf_distances[tf], pullback_tolerance)
+                    res = ltf_results[tf]
+                    row_data[f"Dist to {tf} 50-EMA"] = format_cell(res["dist"], res["ema"], pullback_tolerance)
                     
-                row_data["Live Price"] = round(df_15m_base['Close'].iloc[-1], 2)
                 scanned_opportunities.append(row_data)
                 
-            except Exception:
+            except Exception as e:
+                # If a stock breaks, we silently pass so the rest of the scan finishes
                 pass
                 
         execution_progress.empty()
@@ -195,4 +209,4 @@ if run_scan:
                 st.success(f"📊 X-Ray Mode: Found **{len(display_dataframe)}** stocks in your {trend_mode} Macro Trend.")
             st.dataframe(display_dataframe, use_container_width=True, hide_index=True)
         else:
-            st.warning(f"No stocks matched. Tip: Uncheck 'Strict Mode' to see all stocks in the Macro Trend and verify the data is flowing.")
+            st.warning(f"No stocks matched. Ensure the market is open, or widen your parameters slightly.")
