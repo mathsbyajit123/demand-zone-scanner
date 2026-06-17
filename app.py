@@ -2,21 +2,22 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import time
+from datetime import datetime
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Pure LTF Proximity Scanner", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Institutional Cost-Floor Engine", layout="wide", page_icon="🛡️")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 38px; font-weight: 800; color: #E91E63; margin-bottom: 0px; }
-    .sub-title { font-size: 16px; color: #455A64; margin-bottom: 25px; }
+    .main-title { font-size: 36px; font-weight: 800; color: #1E3A8A; margin-bottom: 0px; }
+    .sub-title { font-size: 16px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">⚡ Pure LTF Proximity Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Lightning-fast intraday scanner. Hunts for exact ±% touches on 15m, 30m, 1H, and 75m EMAs.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🛡️ Institutional Accumulation & Cost-Floor Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Unbiased End-of-Day Swing Scanner. Tracks FII/DII footprints via Event-Based Anchored VWAP.</p>', unsafe_allow_html=True)
 
-# --- MARKET SYMBOLS ---
+# --- BULLEPROOF INDEX SYMBOL LOADER ---
 @st.cache_data(ttl=86400)
 def load_symbols(category):
     urls = {
@@ -30,162 +31,148 @@ def load_symbols(category):
         df = pd.read_csv(urls[category])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS"]
+        # Hardcoded fallback for top liquid large-caps if NSE server fails
+        return ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"]
 
-# --- BULLETPROOF RESAMPLER ---
-def resample_ltf(df, timeframe):
-    if df is None or df.empty: return None
-    try:
-        mapping = {'30m': '30min', '1h': '60min', '75m': '75min'}
-        if timeframe in mapping:
-            resampled = df.resample(mapping[timeframe]).agg({
-                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
-            }).ffill().dropna()
-            return resampled
-    except Exception:
-        pass
-    return df
-
-# --- PROXIMITY MATH ---
-def calculate_ema_data(df):
-    if df is None or len(df) < 50: return None, None
-    ema_50 = df['Close'].ewm(span=50, min_periods=1, adjust=False).mean().iloc[-1]
+# --- DYNAMIC ANCHORED VWAP MATH ENGINE ---
+def process_institutional_floor(df, lookback_days, volume_multiplier):
+    if df is None or len(df) < 40:
+        return None
+    
+    # Calculate baseline institutional activity (20-Day Volume SMA)
+    df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
+    
+    # Isolate the lookback window for potential institutional entry events
+    # We look back 'lookback_days' but leave room to ensure tracking space
+    total_bars = len(df)
+    start_idx = max(20, total_bars - lookback_days)
+    lookback_df = df.iloc[start_idx:]
+    
+    # Condition: Volume must heavily exceed baseline average
+    spike_condition = lookback_df['Volume'] > (volume_multiplier * lookback_df['Vol_SMA20'])
+    event_days = lookback_df[spike_condition]
+    
+    if event_days.empty:
+        return None # No institutional footprint found in the window
+    
+    # Identify the largest block deal / accumulation event day (highest absolute volume)
+    anchor_date = event_days['Volume'].idxmax()
+    
+    # Slice dataframe from the institutional anchor day forward to today
+    df_anchored = df.loc[anchor_date:].copy()
+    
+    if len(df_anchored) < 1:
+        return None
+        
+    # Institutional Typical Price formula
+    df_anchored['Typical_Price'] = (df_anchored['High'] + df_anchored['Low'] + df_anchored['Close']) / 3
+    
+    # Compute running Anchored VWAP
+    df_anchored['PV'] = df_anchored['Typical_Price'] * df_anchored['Volume']
+    df_anchored['Cum_PV'] = df_anchored['PV'].cumsum()
+    df_anchored['Cum_Vol'] = df_anchored['Volume'].cumsum()
+    df_anchored['AVWAP'] = df_anchored['Cum_PV'] / df_anchored['Cum_Vol']
+    
+    # Extract structural calculation details
     latest_close = df['Close'].iloc[-1]
+    latest_avwap = df_anchored['AVWAP'].iloc[-1]
+    proximity_pct = ((latest_close - latest_avwap) / latest_avwap) * 100
     
-    distance_pct = ((latest_close - ema_50) / ema_50) * 100
-    return round(distance_pct, 2), round(ema_50, 2)
+    event_vol_multiplier = event_days.loc[anchor_date, 'Volume'] / event_days.loc[anchor_date, 'Vol_SMA20']
+    
+    return {
+        "anchor_date": anchor_date.strftime('%Y-%m-%d'),
+        "latest_close": round(latest_close, 2),
+        "avwap_value": round(latest_avwap, 2),
+        "proximity": round(proximity_pct, 2),
+        "vol_mult": round(event_vol_multiplier, 1)
+    }
 
-def format_cell(dist, ema_val, tolerance):
-    if dist is None: return "N/A"
-    
-    base_text = f"{dist}% (EMA: ₹{ema_val})"
-    
-    if abs(dist) <= tolerance:
-        return f"🎯 {base_text}"
-    elif dist > 0:
-        return f"🟢 +{base_text}"
-    else:
-        return f"🔴 {base_text}"
-
-# --- UI DASHBOARD ---
+# --- SIDEBAR INTERFACE CONTROL ---
 with st.sidebar:
-    st.header("1. Target Universe")
-    selected_sector = st.selectbox("Market Index", ["Test Scan (5 Stocks)", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
+    st.header("1. Liquidity Pool")
+    selected_sector = st.selectbox("Market Index Universe", ["Test Large-Caps", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
     
     st.divider()
-    st.header("2. Setup Direction")
-    trend_mode = st.radio("Select Trading Bias:", ["Bullish (Looking for Support)", "Bearish (Looking for Resistance)"])
+    st.header("2. Footprint Detection")
+    lookback_window = st.slider("Event Lookback Window (Days)", 10, 60, 30, step=5, 
+                                help="Number of trading days to look back into history to find the institutional block footprint.")
+    
+    vol_threshold = st.slider("Institutional Vol Multiplier", 2.0, 5.0, 3.0, step=0.5, 
+                              help="Filter only days where daily volume was X times greater than its 20-day moving average.")
     
     st.divider()
-    st.header("3. Proximity Matrix")
-    ltf_options = st.multiselect(
-        "Select Timeframes to Scan:",
-        ["15m", "30m", "1h", "75m"],
-        default=["15m", "30m", "1h", "75m"]
-    )
-    
-    pullback_tolerance = st.slider("± Approach Tolerance (%)", 0.1, 2.0, 0.5, step=0.1, help="Finds stocks sitting exactly within this + or - percentage of the 50 EMA.")
+    st.header("3. Accumulation Zone")
+    max_proximity = st.slider("Max Proximity Tolerance (%)", 0.5, 3.0, 2.0, step=0.1, 
+                              help="Flags stocks sitting between -0.5% and this percentage above the institutional cost line.")
     
     st.divider()
-    st.header("4. Engine Mode")
-    strict_mode = st.checkbox("Strict Mode: ONLY show stocks within the ± tolerance on a selected timeframe", value=True)
-    
-    st.divider()
-    run_scan = st.button("🚀 EXECUTE INTRADAY SCAN", type="primary", use_container_width=True)
+    run_scan = st.button("🚀 RUN INSTITUTIONAL SCAN", type="primary", use_container_width=True)
 
-target_symbols = load_symbols("NIFTY 50")[:5] if "Test" in selected_sector else load_symbols(selected_sector)
+# Assign symbol arrays
+target_symbols = load_symbols("NIFTY 50") if "Test" in selected_sector else load_symbols(selected_sector)
 
-# --- LIVE PROCESSING ENGINE ---
+# --- CODE EXECUTION CORE ENGINE ---
 if run_scan:
-    if not ltf_options:
-        st.error("⚠️ Please select at least one Timeframe from the sidebar.")
-    else:
-        scanned_opportunities = []
-        st.info("⚡ Streaming Pure Intraday Data...")
-        execution_progress = st.progress(0, text="Igniting engine...")
+    scanned_opportunities = []
+    st.info("📊 Fetching delivery-grade historical data sheets...")
+    execution_progress = st.progress(0, text="Initializing database access...")
+    
+    total_symbols = len(target_symbols)
+    
+    for idx, ticker in enumerate(target_symbols):
+        clean_ticker = ticker.replace('.NS', '')
+        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker} Accumulation Fields...")
         
-        total_symbols = len(target_symbols)
-        
-        for idx, ticker in enumerate(target_symbols):
-            clean_ticker = ticker.replace('.NS', '')
-            execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker}...")
+        try:
+            # Fetch daily data for full structural context
+            stock = yf.Ticker(ticker)
+            df_daily = stock.history(period='1y', interval='1d')
             
-            try:
-                time.sleep(0.1) # Ultra-fast throttle since we only make 1 request per stock
+            if df_daily.empty or len(df_daily) < 40:
+                continue
                 
-                # Fetch 60 days of 15m data (maximum allowed for intraday)
-                stock = yf.Ticker(ticker)
-                df_15m_base = stock.history(period='60d', interval='15m')
+            # Clean indices
+            if df_daily.index.tz is not None: 
+                df_daily.index = df_daily.index.tz_localize(None)
                 
-                if df_15m_base.empty:
-                    continue
+            df_daily = df_daily.ffill().dropna(subset=['Close'])
+            
+            # Run Mathematical Filters
+            metrics = process_institutional_floor(df_daily, lookback_window, vol_threshold)
+            
+            if metrics is None:
+                continue
+            
+            # PURE UNBIASED ENTRY FILTER ZONE
+            # We want the stock to be right on the line, allowing a maximum minor undershoot of -0.5% 
+            # and up to the user-selected upper proximity barrier.
+            if -0.5 <= metrics["proximity"] <= max_proximity:
+                scanned_opportunities.append({
+                    "Stock Symbol": clean_ticker,
+                    "Live Price (₹)": metrics["latest_close"],
+                    "Institutional Cost Basis (₹)": metrics["avwap_value"],
+                    "Proximity to Floor (%)": f"🎯 {metrics['proximity']}%" if metrics['proximity'] >= 0 else f"⚠️ {metrics['proximity']}%",
+                    "Anchor Event Date": metrics["anchor_date"],
+                    "Volume Spike Size": f"{metrics['vol_mult']}x Avg"
+                })
                 
-                # Clean timezone data and forward-fill gaps
-                if df_15m_base.index.tz is not None: 
-                    df_15m_base.index = df_15m_base.index.tz_localize(None)
-                    
-                df_15m_base = df_15m_base.ffill().dropna(subset=['Close'])
-                
-                if len(df_15m_base) < 50:
-                    continue
-                    
-                # Build Timeframes dynamically
-                df_map = {}
-                if "15m" in ltf_options: df_map["15m"] = df_15m_base
-                if "30m" in ltf_options: df_map["30m"] = resample_ltf(df_15m_base, '30m')
-                if "1h" in ltf_options: df_map["1h"] = resample_ltf(df_15m_base, '1h')
-                if "75m" in ltf_options: df_map["75m"] = resample_ltf(df_15m_base, '75m')
-                
-                ltf_results = {}
-                is_within_tolerance = False
-                matches_bias = False
-                
-                for tf in ltf_options:
-                    df_target = df_map.get(tf)
-                    dist, ema_val = calculate_ema_data(df_target)
-                    ltf_results[tf] = {"dist": dist, "ema": ema_val}
-                    
-                    if dist is not None:
-                        # Check Absolute Proximity
-                        if abs(dist) <= pullback_tolerance:
-                            is_within_tolerance = True
-                            
-                        # Check Bias Alignment (Only keep if it matches Bull/Bear logic)
-                        if "Bullish" in trend_mode and dist >= -0.5: # Allow slight dip below EMA
-                            matches_bias = True
-                        elif "Bearish" in trend_mode and dist <= 0.5: # Allow slight pop above EMA
-                            matches_bias = True
-                
-                # Filter Logic
-                if strict_mode and not is_within_tolerance:
-                    continue
-                    
-                if not matches_bias:
-                    continue
-                    
-                # Build Table Row
-                row_data = {
-                    "Ticker": clean_ticker,
-                    "Live Price": f"₹{round(df_15m_base['Close'].iloc[-1], 2)}"
-                }
-                
-                for tf in ltf_options:
-                    res = ltf_results[tf]
-                    row_data[f"{tf} 50-EMA"] = format_cell(res["dist"], res["ema"], pullback_tolerance)
-                    
-                scanned_opportunities.append(row_data)
-                
-            except Exception:
-                pass
-                
-        execution_progress.empty()
+        except Exception:
+            pass
+            
+    execution_progress.empty()
+    
+    # --- RENDER RESULTS MATRIX ---
+    if scanned_opportunities:
+        display_df = pd.DataFrame(scanned_opportunities)
+        st.success(f"🛡️ Found **{len(display_df)}** institutional accumulation setups matching your rules.")
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        if scanned_opportunities:
-            display_dataframe = pd.DataFrame(scanned_opportunities)
-            if strict_mode:
-                st.success(f"🎯 Strict Mode: Found **{len(display_dataframe)}** {trend_mode} setups sitting right on the intraday EMAs.")
-            else:
-                st.success(f"📊 Matrix Mode: Found **{len(display_dataframe)}** {trend_mode} setups.")
-            st.dataframe(display_dataframe, use_container_width=True, hide_index=True)
-        else:
-            st.warning(f"No stocks are within ±{pullback_tolerance}% of the selected EMAs right now. Try increasing the tolerance slider.")
+        st.markdown("""
+        ### 📖 The Professional Execution Rules for These Results:
+        1. **The Entry Matrix:** Select only the top 3 liquid names from this list. Place a **GTT Buy Order** exactly at the *Institutional Cost Basis (₹)*.
+        2. **The Defense Guardrail:** Set a hard, automated GTT Stop Loss **3.5% below your entry price**. If the price drops cleanly past this point, it means the institution has abandoned defending their average cost. Accept it and exit instantly.
+        3. **The Yield Target:** Set a GTT Sell order at **+8% to +10%** from your entry price. Let the institutional buy algorithms drive the recovery run over the next 3 weeks.
+        """)
+    else:
+        st.warning("The market is currently extended. No institutions are defending historical cost lines inside your tolerance settings. Try widening the Proximity Tolerance or lowering the Volume Multiplier.")
