@@ -2,20 +2,19 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import time
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Dual Institutional Matrix Engine", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="EMA & FVG Confluence Scanner", layout="wide", page_icon="⚡")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 36px; font-weight: 800; color: #1E3A8A; margin-bottom: 0px; }
+    .main-title { font-size: 36px; font-weight: 800; color: #0284C7; margin-bottom: 0px; }
     .sub-title { font-size: 16px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🛡️ Dual Institutional Phase & S/R Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Complete Long/Short Macro Scanner. Detects Bullish Accumulation & Bearish Liquidation Cycles.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">⚡ Multi-Timeframe EMA & FVG Confluence Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Confluence Hunting Sheet. Tracks stocks within ±5% of the 50-EMA matching active historical Fair Value Gaps.</p>', unsafe_allow_html=True)
 
 # --- BULLETPROOF INDEX SYMBOL LOADER ---
 @st.cache_data(ttl=86400)
@@ -31,183 +30,182 @@ def load_symbols(category):
         df = pd.read_csv(urls[category])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        return ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"]
+        return ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS"]
 
-# --- ADVANCED DUAL MACRO STRUCTURAL MATH ENGINE ---
-def analyze_macro_structure(df, df_weekly, trading_bias, sr_tolerance=1.5):
-    if df is None or len(df) < 200 or df_weekly is None or len(df_weekly) < 50:
+# --- ADVANCED TIMEFRAME RESAMPLER ---
+def resample_market_data(df_daily, timeframe):
+    if df_daily is None or df_daily.empty:
         return None
     
-    latest_close = df['Close'].iloc[-1]
-    
-    # 1. Trend Identification (Weekly Filter)
-    df_weekly['EMA50_W'] = df_weekly['Close'].ewm(span=50, adjust=False).mean()
-    weekly_close = df_weekly['Close'].iloc[-1]
-    weekly_ema = df_weekly['EMA50_W'].iloc[-1]
-    
-    if weekly_close > weekly_ema:
-        macro_trend = "🟢 STRONG UPTREND"
-    else:
-        macro_trend = "🔴 MACRO DOWNTREND"
-    
-    # 2. Wyckoff Phase Classification (Daily Moving Average Geometry)
-    df['EMA50_D'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['EMA200_D'] = df['Close'].ewm(span=200, adjust=False).mean()
-    
-    ema50_latest = df['EMA50_D'].iloc[-1]
-    ema200_latest = df['EMA200_D'].iloc[-1]
-    
-    ema200_slope = (df['EMA200_D'].iloc[-1] - df['EMA200_D'].iloc[-20]) / df['EMA200_D'].iloc[-20] * 100
-    price_60_days_ago = df['Close'].iloc[-60]
-    ema200_60_days_ago = df['EMA200_D'].iloc[-60]
-    
-    if latest_close > ema200_latest and ema50_latest > ema200_latest and ema200_slope > 0.05:
-        market_phase = "Phase 2: MARKUP (Explosive Bull Run)"
-    elif latest_close < ema200_latest and ema50_latest < ema200_latest and ema200_slope < -0.05:
-        market_phase = "Phase 4: MARKDOWN (Severe Liquidation)"
-    else:
-        if price_60_days_ago < ema200_60_days_ago:
-            market_phase = "Phase 1: ACCUMULATION (Institutional Load)"
-        else:
-            market_phase = "Phase 3: DISTRIBUTION (Retail Trap / Top Heavy)"
-
-    # 3. Dual-Direction S/R Flip Detection Algorithm
-    historical_window = df.iloc[-70:-10]
-    recent_window = df.iloc[-10:]
-    
-    sr_flip_status = "❌ No Setup Active"
-    proximity_val = "N/A"
-    
-    if "Bullish" in trading_bias:
-        # Old Resistance becomes New Support
-        macro_resistance_peak = historical_window['High'].max()
-        has_broken_out = recent_window['High'].max() > macro_resistance_peak
-        distance_to_peak = ((latest_close - macro_resistance_peak) / macro_resistance_peak) * 100
-        
-        if has_broken_out:
-            if abs(distance_to_peak) <= sr_tolerance and latest_close >= (macro_resistance_peak * 0.995):
-                sr_flip_status = f"🎯 BULLISH S/R FLIP (Old Res: ₹{round(macro_resistance_peak, 2)})"
-                proximity_val = f"{round(distance_to_peak, 2)}%"
-            elif latest_close > macro_resistance_peak:
-                sr_flip_status = "📈 Breakout Extended (Waiting for Pullback)"
-                proximity_val = f"{round(distance_to_peak, 2)}%"
-                
-    elif "Bearish" in trading_bias:
-        # Old Support becomes New Resistance (Ceiling)
-        macro_support_trough = historical_window['Low'].min()
-        has_broken_down = recent_window['Low'].min() < macro_support_trough
-        # Proximity measurement from underneath the broken floor
-        distance_to_trough = ((latest_close - macro_support_trough) / macro_support_trough) * 100
-        
-        if has_broken_down:
-            if abs(distance_to_trough) <= sr_tolerance and latest_close <= (macro_support_trough * 1.005):
-                sr_flip_status = f"🩸 BEARISH S/R FLIP (Old Supp: ₹{round(macro_support_trough, 2)})"
-                proximity_val = f"{round(distance_to_trough, 2)}%"
-            elif latest_close < macro_support_trough:
-                sr_flip_status = "📉 Breakdown Extended (Waiting for Relief Rally)"
-                proximity_val = f"{round(distance_to_trough, 2)}%"
-
-    return {
-        "live_price": round(latest_close, 2),
-        "trend": macro_trend,
-        "phase": market_phase,
-        "sr_status": sr_flip_status,
-        "proximity": proximity_val
+    tf_map = {
+        "1D": "1D",
+        "1W": "W-FRI",
+        "1M": "ME",
+        "3M": "3ME",
+        "6M": "6ME"
     }
+    
+    if timeframe == "1D":
+        return df_daily
+        
+    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
+    resampled = df_daily.resample(tf_map[timeframe]).agg(logic).dropna()
+    return resampled
 
-# --- SIDEBAR INTERFACE CONTROL ---
+# --- UNMITIGATED FVG SEARCH ALGORITHM ---
+def find_nearest_unmitigated_fvg(df, live_price, bias="Bullish"):
+    if df is None or len(df) < 3:
+        return "None Detected"
+        
+    highs = df['High'].values
+    lows = df['Low'].values
+    closes = df['Close'].values
+    
+    open_fvgs = []
+    
+    if "Bullish" in bias:
+        # Scan backward from history to locate open imbalances
+        for i in range(2, len(df)):
+            if highs[i-2] < lows[i]:  # Bullish FVG Imbalance condition
+                fvg_top = lows[i]
+                fvg_bottom = highs[i-2]
+                
+                # Verify if any subsequent candle has already completely mitigated it
+                mitigated = False
+                for j in range(i+1, len(df)):
+                    if lows[j] <= fvg_bottom:
+                        mitigated = True
+                        break
+                
+                if not mitigated:
+                    open_fvgs.append((fvg_bottom, fvg_top))
+                    
+        if not open_fvgs:
+            return "None Open"
+            
+        # Find the open FVG closest to our current trading price
+        closest_fvg = min(open_fvgs, key=lambda x: abs(live_price - x[1]))
+        return f"₹{round(closest_fvg[0],1)} - ₹{round(closest_fvg[1],1)}"
+
+    else:  # Bearish Structure
+        for i in range(2, len(df)):
+            if lows[i-2] > highs[i]:  # Bearish FVG Imbalance condition
+                fvg_top = lows[i-2]
+                fvg_bottom = highs[i]
+                
+                mitigated = False
+                for j in range(i+1, len(df)):
+                    if highs[j] >= fvg_top:
+                        mitigated = True
+                        break
+                if not mitigated:
+                    open_fvgs.append((fvg_bottom, fvg_top))
+                    
+        if not open_fvgs:
+            return "None Open"
+            
+        closest_fvg = min(open_fvgs, key=lambda x: abs(live_price - x[0]))
+        return f"₹{round(closest_fvg[0],1)} - ₹{round(closest_fvg[1],1)}"
+
+# --- SIDEBAR CONTROL UNIT ---
 with st.sidebar:
-    st.header("1. Strategy Bias")
-    trading_mode = st.radio("Select Trading Engine Direction:", ["Bullish (Long / Buy Setups)", "Bearish (Short / Sell Setups)"])
+    st.header("1. Core Setup Direction")
+    trend_bias = st.radio("Select Strategy Bias Direction:", ["Bullish (Support FVG + EMA)", "Bearish (Resistance FVG + EMA)"])
     
     st.divider()
-    st.header("2. Core Liquidity")
+    st.header("2. Horizon Matrix")
+    base_tf = st.selectbox("Select Core Scanning Timeframe:", ["1D", "1W", "1M", "3M", "6M"], index=1)
+    
+    # Calculate Higher Timeframe Mapping anchor automatically
+    htf_mapping = {"1D": "1W", "1W": "1M", "1M": "3M", "3M": "6M", "6M": "6M"}
+    higher_tf = htf_mapping[base_tf]
+    
+    st.info(f"Targeting System:\n* Base Track: {base_tf} 50-EMA\n* Higher Matrix Track: {higher_tf} FVG Void")
+    
+    st.divider()
+    st.header("3. Liquidity & Threshold")
     selected_sector = st.selectbox("Market Index Universe", ["Test Universe", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
+    ema_tolerance = st.slider("EMA Approach Proximity Tolerance (±%)", 1.0, 5.0, 5.0, step=0.5)
     
     st.divider()
-    st.header("3. Structural Filters")
-    phase_filter = st.selectbox("Filter by Wyckoff Phase:", ["All Phases", "Phase 1: ACCUMULATION", "Phase 2: MARKUP", "Phase 3: DISTRIBUTION", "Phase 4: MARKDOWN"])
-    only_activated_flips = st.checkbox("Show ONLY confirmed S/R Flips", value=False)
-    sr_box_tolerance = st.slider("S/R Trigger Tolerance (%)", 0.5, 3.0, 1.5, step=0.1)
-    
-    st.divider()
-    run_scan = st.button("🚀 EXECUTE TRACKING ENGINE", type="primary", use_container_width=True)
+    run_scan = st.button("🚀 EXECUTE CONFLUENCE SCAN", type="primary", use_container_width=True)
 
-# Assign symbol arrays
-target_symbols = load_symbols("NIFTY 50")[:6] if "Test" in selected_sector else load_symbols(selected_sector)
+# Select processing lists
+target_symbols = load_symbols("NIFTY 50")[:5] if "Test" in selected_sector else load_symbols(selected_sector)
 
-# --- CODE EXECUTION CORE ENGINE ---
+# --- RUNNING DATA COMPILATION PIPELINE ---
 if run_scan:
     scanned_opportunities = []
-    st.info(f"📊 Running comprehensive structural sweeps for {trading_mode} formations...")
-    execution_progress = st.progress(0, text="Calibrating macro streams...")
+    st.info(f"📊 Processing historical multi-year canvas sheets for {selected_sector}...")
+    execution_progress = st.progress(0, text="Synchronizing servers...")
     
     total_symbols = len(target_symbols)
     
     for idx, ticker in enumerate(target_symbols):
         clean_ticker = ticker.replace('.NS', '')
-        execution_progress.progress((idx + 1) / total_symbols, text=f"Processing {clean_ticker}...")
+        execution_progress.progress((idx + 1) / total_symbols, text=f"Scanning Matrix Fields: {clean_ticker}...")
         
         try:
             stock = yf.Ticker(ticker)
-            df_daily = stock.history(period='1y', interval='1d')
-            df_weekly = stock.history(period='2y', interval='1wk')
+            # Fetch maximum history to ensure high timeframe 50 EMAs compute without truncating
+            df_raw = stock.history(period='max', interval='1d')
             
-            if df_daily.empty or len(df_daily) < 200 or df_weekly.empty:
+            if df_raw.empty or len(df_raw) < 250:
                 continue
                 
-            if df_daily.index.tz is not None: df_daily.index = df_daily.index.tz_localize(None)
-            if df_weekly.index.tz is not None: df_weekly.index = df_weekly.index.tz_localize(None)
-                
-            df_daily = df_daily.ffill().dropna(subset=['Close'])
-            df_weekly = df_weekly.ffill().dropna(subset=['Close'])
+            if df_raw.index.tz is not None: 
+                df_raw.index = df_raw.index.tz_localize(None)
+            df_raw = df_raw.ffill().dropna(subset=['Close'])
             
-            # Process calculations with active direction tracking
-            struct = analyze_macro_structure(df_daily, df_weekly, trading_mode, sr_box_tolerance)
+            # Resample into distinct tracking dataframes
+            df_base = resample_market_data(df_raw, base_tf)
+            df_high = resample_market_data(df_raw, higher_tf)
             
-            if struct is None:
-                continue
-            
-            # --- FILTER APPLICATION LOGIC ---
-            if "All" not in str(phase_filter) and str(phase_filter) not in struct["phase"]:
+            if df_base is None or len(df_base) < 51 or df_high is None:
                 continue
                 
-            if only_activated_flips and ("BULLISH S/R FLIP" not in struct["sr_status"] and "BEARISH S/R FLIP" not in struct["sr_status"]):
-                continue
+            # Compute base timeframe 50 EMA lines
+            df_base['EMA50'] = df_base['Close'].ewm(span=50, adjust=False).mean()
+            
+            latest_close = df_base['Close'].iloc[-1]
+            latest_ema = df_base['EMA50'].iloc[-1]
+            
+            # Measure exact proximity percentage deviation from the base EMA line
+            ema_distance = ((latest_close - latest_ema) / latest_ema) * 100
+            
+            # --- PROXIMITY RULE CHECK FILTER ---
+            if abs(ema_distance) <= ema_tolerance:
+                # Execute algorithmic deep scans for unmitigated gaps across both fields
+                base_fvg_status = find_nearest_unmitigated_fvg(df_base, latest_close, trend_bias)
+                high_fvg_status = find_nearest_unmitigated_fvg(df_high, latest_close, trend_bias)
                 
-            # Build clean row mapping
-            scanned_opportunities.append({
-                "Stock Symbol": clean_ticker,
-                "Live Price (₹)": struct["live_price"],
-                "Macro Trend (1W)": struct["trend"],
-                "Current Market Phase": struct["phase"],
-                "Structural S/R Status": struct["sr_status"],
-                "Distance to Flip Barrier": struct["proximity"]
-            })
+                scanned_opportunities.append({
+                    "Stock Symbol": clean_ticker,
+                    "Live Price (₹)": round(latest_close, 2),
+                    f"{base_tf} 50-EMA (₹)": round(latest_ema, 2),
+                    "Distance to EMA (%)": f"{round(ema_distance, 2)}%",
+                    f"Open {base_tf} FVG Zone": base_fvg_status,
+                    f"Open Higher {higher_tf} FVG Zone": high_fvg_status
+                })
                 
         except Exception:
             pass
             
     execution_progress.empty()
     
-    # --- RENDER STRATEGIC DISPLAY SHEET ---
+    # --- RENDER ANALYTICAL MATRIX GRID ---
     if scanned_opportunities:
         display_df = pd.DataFrame(scanned_opportunities)
-        st.success(f"🛡️ Scan Complete: Isolated **{len(display_df)}** match profiles.")
+        st.success(f"🎯 Confluence Confirmed: Found **{len(display_df)}** stocks trading within your setup window.")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # Professional Execution Cheat Sheet
-        if "Bullish" in trading_mode:
-            st.markdown("""
-            ### 💡 How to Play These Bullish Setups:
-            * **The Target Profile:** Look for stocks in **Phase 1** or **Phase 2** showing a **Bullish S/R Flip**. 
-            * **The Entry Window:** Wait for a 75-minute chart confirmation (bullish engulfing or a hammer pinbar wick rejecting the old resistance line).
-            """)
-        else:
-            st.markdown("""
-            ### 💡 How to Play These Bearish Setups:
-            * **The Shorting Target:** Look for stocks inside **Phase 3: DISTRIBUTION** or **Phase 4: MARKDOWN** that display **🔴 BEARISH S/R FLIP**.
-            * **The Shorting Execution:** The price has broken down below a major historical support floor and has rallied back up to test that line from below. If the 75-minute candle prints a heavy red shooting-star or bearish rejection wick at this line, it's an elite shorting entry setup. Placed your tight stop loss 3.5% above the rejection wick.
-            """)
+        # Professional Step-by-Step Trade Execution Guide
+        st.markdown(f"""
+        ### 📖 The Professional Execution Blueprint for These Confluence Matches:
+        1. **Locate High-Confluence Targets:** Review the output table and prioritize stocks that display an active range in **both** the FVG columns (meaning a base FVG and a macro HTF FVG are sitting right near the price).
+        2. **Track the Live 75-Minute Floor:** When a flagged stock hits your alert zone, open your charting platform. Look for the price to dip cleanly into the *Open Higher {higher_tf} FVG Zone* or test the *{base_tf} 50-EMA*.
+        3. **The Trigger Confirmation:** Do not place a blind order. Wait for a 75-minute candle to pierce the zone, reject it aggressively with a long lower shadow wick, and close positive. Enter the trade right at that confirmation candle's close.
+        4. **Lock In Your Defense:** Place your automated GTT stop loss **3.5% directly below the lowest wick of your entry structure** and let the market drive toward your **10%+ profit targets** over the coming weeks.
+        """)
     else:
-        st.warning("No structural setups match your exact criteria. Try switching phases or widening the tolerance.")
+        st.warning(f"No stocks inside the selected universe are currently within ±{ema_tolerance}% of their {base_tf} 50-EMA matching active imbalances. Try increasing your proximity tolerance slider.")
