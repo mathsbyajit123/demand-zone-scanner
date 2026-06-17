@@ -1,11 +1,11 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import time
-from datetime import datetime
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Institutional Cost-Floor Engine", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Institutional Phase & S/R Matrix", layout="wide", page_icon="🛡️")
 
 st.markdown("""
     <style>
@@ -14,8 +14,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🛡️ Institutional Accumulation & Cost-Floor Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Unbiased End-of-Day Swing Scanner. Tracks FII/DII footprints via Event-Based Anchored VWAP.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🛡️ Institutional Macro Phase & S/R Flip Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Advanced Higher Timeframe Scanner. Detects Wyckoff Cycles, Macro Trends, and Structural S/R Flips.</p>', unsafe_allow_html=True)
 
 # --- BULLETPROOF INDEX SYMBOL LOADER ---
 @st.cache_data(ttl=86400)
@@ -33,115 +33,163 @@ def load_symbols(category):
     except Exception:
         return ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"]
 
-# --- DYNAMIC ANCHORED VWAP MATH ENGINE ---
-def process_institutional_floor(df, lookback_days, volume_multiplier):
-    if df is None or len(df) < 40:
+# --- ADVANCED MACRO STRUCTURAL MATH ENGINE ---
+def analyze_macro_structure(df, df_weekly, sr_tolerance=1.5):
+    if df is None or len(df) < 200 or df_weekly is None or len(df_weekly) < 50:
         return None
-    
-    df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
-    
-    total_bars = len(df)
-    start_idx = max(20, total_bars - lookback_days)
-    lookback_df = df.iloc[start_idx:]
-    
-    spike_condition = lookback_df['Volume'] > (volume_multiplier * lookback_df['Vol_SMA20'])
-    event_days = lookback_df[spike_condition]
-    
-    if event_days.empty:
-        return None 
-    
-    anchor_date = event_days['Volume'].idxmax()
-    df_anchored = df.loc[anchor_date:].copy()
-    
-    if len(df_anchored) < 1:
-        return None
-        
-    df_anchored['Typical_Price'] = (df_anchored['High'] + df_anchored['Low'] + df_anchored['Close']) / 3
-    
-    df_anchored['PV'] = df_anchored['Typical_Price'] * df_anchored['Volume']
-    df_anchored['Cum_PV'] = df_anchored['PV'].cumsum()
-    df_anchored['Cum_Vol'] = df_anchored['Volume'].cumsum()
-    df_anchored['AVWAP'] = df_anchored['Cum_PV'] / df_anchored['Cum_Vol']
     
     latest_close = df['Close'].iloc[-1]
-    latest_avwap = df_anchored['AVWAP'].iloc[-1]
-    proximity_pct = ((latest_close - latest_avwap) / latest_avwap) * 100
     
-    event_vol_multiplier = event_days.loc[anchor_date, 'Volume'] / event_days.loc[anchor_date, 'Vol_SMA20']
+    # 1. Trend Identification (Weekly Filter)
+    df_weekly['EMA50_W'] = df_weekly['Close'].ewm(span=50, adjust=False).mean()
+    weekly_close = df_weekly['Close'].iloc[-1]
+    weekly_ema = df_weekly['EMA50_W'].iloc[-1]
     
+    macro_trend = "🟢 STRONG UPTREND" if weekly_close > weekly_ema else "🔴 DOWNTREND / CAUTION"
+    
+    # 2. Wyckoff Phase Classification (Daily Moving Average Geometry)
+    df['EMA50_D'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['EMA200_D'] = df['Close'].ewm(span=200, adjust=False).mean()
+    
+    ema50_latest = df['EMA50_D'].iloc[-1]
+    ema200_latest = df['EMA200_D'].iloc[-1]
+    
+    # Calculate 20-day slope of 200 EMA to identify flattening vs trending regimes
+    ema200_slope = (df['EMA200_D'].iloc[-1] - df['EMA200_D'].iloc[-20]) / df['EMA200_D'].iloc[-20] * 100
+    
+    # Historical baseline from 60 days ago to check trajectory
+    price_60_days_ago = df['Close'].iloc[-60]
+    ema200_60_days_ago = df['EMA200_D'].iloc[-60]
+    
+    if latest_close > ema200_latest and ema50_latest > ema200_latest and ema200_slope > 0.05:
+        market_phase = "Phase 2: MARKUP (Explosive Bull Run)"
+    elif latest_close < ema200_latest and ema50_latest < ema200_latest and ema200_slope < -0.05:
+        market_phase = "Phase 4: MARKDOWN (Severe Liquidation)"
+    else:
+        # Intricate range detection (Phase 1 vs Phase 3)
+        if price_60_days_ago < ema200_60_days_ago:
+            market_phase = "Phase 1: ACCUMULATION (Institutional Loading Zone)"
+        else:
+            market_phase = "Phase 3: DISTRIBUTION (Retail Trap / Top Heavy)"
+
+    # 3. S/R Flip Detection Algorithm (Resistance Becomes Support)
+    # Step A: Find the highest resistance peak inside a historical window (excluding the last 10 days)
+    historical_window = df.iloc[-70:-10]
+    macro_resistance_peak = historical_window['High'].max()
+    
+    # Step B: Check if price broke cleanly above that historical peak within the last 10 days
+    recent_window = df.iloc[-10:]
+    has_broken_out = recent_window['High'].max() > macro_resistance_peak
+    
+    # Step C: Check if current price has pulled back right on top of that broken resistance ceiling
+    distance_to_peak = ((latest_close - macro_resistance_peak) / macro_resistance_peak) * 100
+    
+    sr_flip_status = "❌ No Setup Active"
+    if has_broken_out:
+        if abs(distance_to_peak) <= sr_tolerance:
+            sr_flip_status = f"🎯 S/R FLIP ACTIVATED (Old Res: ₹{round(macro_resistance_peak, 2)})"
+        elif distance_to_peak > sr_tolerance and latest_close > macro_resistance_peak:
+            sr_flip_status = "📈 Breakout Extended (Waiting for Pullback)"
+
     return {
-        "anchor_date": anchor_date.strftime('%Y-%m-%d'),
-        "latest_close": round(latest_close, 2),
-        "avwap_value": round(latest_avwap, 2),
-        "proximity": round(proximity_pct, 2),
-        "vol_mult": round(event_vol_multiplier, 1)
+        "live_price": round(latest_close, 2),
+        "trend": macro_trend,
+        "phase": market_phase,
+        "sr_status": sr_flip_status,
+        "proximity_to_flip": round(distance_to_peak, 2) if has_broken_out else None
     }
 
 # --- SIDEBAR INTERFACE CONTROL ---
 with st.sidebar:
-    st.header("1. Liquidity Pool")
-    selected_sector = st.selectbox("Market Index Universe", ["Test Large-Caps", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
+    st.header("1. Core Liquidity")
+    selected_sector = st.selectbox("Market Index Universe", ["Test Universe", "NIFTY 50", "NIFTY Bank", "NIFTY Midcap 100", "NIFTY 500"])
     
     st.divider()
-    st.header("2. Footprint Detection")
-    lookback_window = st.slider("Event Lookback Window (Days)", 10, 60, 30, step=5)
-    vol_threshold = st.slider("Institutional Vol Multiplier", 2.0, 5.0, 3.0, step=0.5)
+    st.header("2. Structural Parameters")
+    phase_filter = str(st.selectbox("Filter by Wyckoff Phase:", ["All Phases", "Phase 1: ACCUMULATION", "Phase 2: MARKUP", "Phase 3: DISTRIBUTION", "Phase 4: MARKDOWN"]))
+    
+    only_sr_flips = st.checkbox("Show ONLY confirmed S/R Flip Pullbacks", value=False,
+                                help="Filters the matrix to strictly highlight stocks testing broken resistance levels.")
+    
+    sr_box_tolerance = st.slider("S/R Touch Tolerance (%)", 0.5, 3.0, 1.5, step=0.1,
+                                 help="Maximum allowed percentage distance between current price and the old resistance line.")
     
     st.divider()
-    st.header("3. Accumulation Zone")
-    max_proximity = st.slider("Max Proximity Tolerance (%)", 0.5, 3.0, 2.0, step=0.1)
-    
-    st.divider()
-    run_scan = st.button("🚀 RUN INSTITUTIONAL SCAN", type="primary", use_container_width=True)
+    run_scan = st.button("🚀 EXECUTE STRUCTURAL SCAN", type="primary", use_container_width=True)
 
-target_symbols = load_symbols("NIFTY 50") if "Test" in selected_sector else load_symbols(selected_sector)
+# Assign symbol arrays
+target_symbols = load_symbols("NIFTY 50")[:6] if "Test" in selected_sector else load_symbols(selected_sector)
 
 # --- CODE EXECUTION CORE ENGINE ---
 if run_scan:
     scanned_opportunities = []
-    st.info("📊 Fetching delivery-grade historical data sheets...")
-    execution_progress = st.progress(0, text="Initializing database access...")
+    st.info("📊 Compiling daily and weekly structural data fields...")
+    execution_progress = st.progress(0, text="Synchronizing index streams...")
+    
     total_symbols = len(target_symbols)
     
     for idx, ticker in enumerate(target_symbols):
         clean_ticker = ticker.replace('.NS', '')
-        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker}...")
+        execution_progress.progress((idx + 1) / total_symbols, text=f"Mapping Matrix Coordinates for {clean_ticker}...")
         
         try:
             stock = yf.Ticker(ticker)
-            df_daily = stock.history(period='1y', interval='1d')
             
-            if df_daily.empty or len(df_daily) < 40:
+            # Fetch daily data for phase/breakout analytics
+            df_daily = stock.history(period='1y', interval='1d')
+            # Fetch weekly data for macro trend direction
+            df_weekly = stock.history(period='2y', interval='1wk')
+            
+            if df_daily.empty or len(df_daily) < 200 or df_weekly.empty:
                 continue
                 
-            if df_daily.index.tz is not None: 
-                df_daily.index = df_daily.index.tz_localize(None)
+            # Clean indices
+            if df_daily.index.tz is not None: df_daily.index = df_daily.index.tz_localize(None)
+            if df_weekly.index.tz is not None: df_weekly.index = df_weekly.index.tz_localize(None)
                 
             df_daily = df_daily.ffill().dropna(subset=['Close'])
-            metrics = process_institutional_floor(df_daily, lookback_window, vol_threshold)
+            df_weekly = df_weekly.ffill().dropna(subset=['Close'])
             
-            if metrics is None:
+            # Process calculations
+            struct = analyze_macro_structure(df_daily, df_weekly, sr_box_tolerance)
+            
+            if struct is None:
                 continue
             
-            # Pure Unbiased Entry Filtering
-            if -0.5 <= metrics["proximity"] <= max_proximity:
-                scanned_opportunities.append({
-                    "Stock Symbol": clean_ticker,
-                    "Live Price (₹)": metrics["latest_close"],
-                    "Institutional Cost Basis (₹)": metrics["avwap_value"],
-                    "Proximity to Floor (%)": f"🎯 {metrics['proximity']}%" if metrics['proximity'] >= 0 else f"⚠️ {metrics['proximity']}%",
-                    "Anchor Event Date": metrics["anchor_date"],
-                    "Volume Spike Size": f"{metrics['vol_mult']}x Avg"
-                })
+            # --- FILTER APPLICATION LOGIC ---
+            if "All" not in phase_filter and phase_filter not in struct["phase"]:
+                continue
+                
+            if only_sr_flips and "ACTIVATED" not in struct["sr_status"]:
+                continue
+                
+            # Build clean analytical data rows
+            scanned_opportunities.append({
+                "Stock Symbol": clean_ticker,
+                "Live Price (₹)": struct["live_price"],
+                "Macro Trend (1W)": struct["trend"],
+                "Current Market Phase": struct["phase"],
+                "Structural S/R Status": struct["sr_status"],
+                "Distance to Flip Support (%)": f"{struct['proximity_to_flip']}%" if struct['proximity_to_flip'] is not None else "N/A"
+            })
                 
         except Exception:
             pass
             
     execution_progress.empty()
     
+    # --- RENDER STRATEGIC DISPLAY SHEET ---
     if scanned_opportunities:
         display_df = pd.DataFrame(scanned_opportunities)
-        st.success(f"🛡️ Found **{len(display_df)}** institutional accumulation setups matching your rules.")
+        st.success(f"🛡️ Structural Map Complete: Found **{len(display_df)}** qualified setups.")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # Professional Execution Cheat Sheet
+        st.markdown("""
+        ### 💡 How to Trade These Structural Matrix Results:
+        1. **The Phase 1 Jackpot:** If a stock is listed under **Phase 1: ACCUMULATION** and its macro trend shows **Strong Uptrend**, institutions are heavily loading up on a macro pullback. This is your lowest risk entry area for a massive 1-month swing.
+        2. **The S/R Flip Entry:** If a stock prints **🎯 S/R FLIP ACTIVATED**, open its 75-minute chart. Wait for your live confirmation setup (a 75m bullish candle closing higher to prove the old resistance ceiling is successfully acting as a solid new floor).
+        3. **Risk Enforcement:** Your stop loss remains an absolute maximum of **3.5% below your entry price**, targeted toward your mechanical **10%+ monthly swing target**.
+        """)
     else:
-        st.warning("No stocks are currently defending historical cost lines inside your tolerance settings.")
+        st.warning("No stocks match the exact structural cycle filters selected. Try setting the Phase Filter to 'All Phases' or widening your S/R Touch Tolerance.")
