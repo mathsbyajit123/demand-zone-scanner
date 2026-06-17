@@ -17,7 +17,7 @@ st.markdown("""
 st.markdown('<p class="main-title">🛡️ Institutional Accumulation & Cost-Floor Engine</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Unbiased End-of-Day Swing Scanner. Tracks FII/DII footprints via Event-Based Anchored VWAP.</p>', unsafe_allow_html=True)
 
-# --- BULLEPROOF INDEX SYMBOL LOADER ---
+# --- BULLETPROOF INDEX SYMBOL LOADER ---
 @st.cache_data(ttl=86400)
 def load_symbols(category):
     urls = {
@@ -31,7 +31,6 @@ def load_symbols(category):
         df = pd.read_csv(urls[category])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
     except Exception:
-        # Hardcoded fallback for top liquid large-caps if NSE server fails
         return ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS"]
 
 # --- DYNAMIC ANCHORED VWAP MATH ENGINE ---
@@ -39,41 +38,31 @@ def process_institutional_floor(df, lookback_days, volume_multiplier):
     if df is None or len(df) < 40:
         return None
     
-    # Calculate baseline institutional activity (20-Day Volume SMA)
     df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
     
-    # Isolate the lookback window for potential institutional entry events
-    # We look back 'lookback_days' but leave room to ensure tracking space
     total_bars = len(df)
     start_idx = max(20, total_bars - lookback_days)
     lookback_df = df.iloc[start_idx:]
     
-    # Condition: Volume must heavily exceed baseline average
     spike_condition = lookback_df['Volume'] > (volume_multiplier * lookback_df['Vol_SMA20'])
     event_days = lookback_df[spike_condition]
     
     if event_days.empty:
-        return None # No institutional footprint found in the window
+        return None 
     
-    # Identify the largest block deal / accumulation event day (highest absolute volume)
     anchor_date = event_days['Volume'].idxmax()
-    
-    # Slice dataframe from the institutional anchor day forward to today
     df_anchored = df.loc[anchor_date:].copy()
     
     if len(df_anchored) < 1:
         return None
         
-    # Institutional Typical Price formula
     df_anchored['Typical_Price'] = (df_anchored['High'] + df_anchored['Low'] + df_anchored['Close']) / 3
     
-    # Compute running Anchored VWAP
     df_anchored['PV'] = df_anchored['Typical_Price'] * df_anchored['Volume']
     df_anchored['Cum_PV'] = df_anchored['PV'].cumsum()
     df_anchored['Cum_Vol'] = df_anchored['Volume'].cumsum()
     df_anchored['AVWAP'] = df_anchored['Cum_PV'] / df_anchored['Cum_Vol']
     
-    # Extract structural calculation details
     latest_close = df['Close'].iloc[-1]
     latest_avwap = df_anchored['AVWAP'].iloc[-1]
     proximity_pct = ((latest_close - latest_avwap) / latest_avwap) * 100
@@ -95,21 +84,16 @@ with st.sidebar:
     
     st.divider()
     st.header("2. Footprint Detection")
-    lookback_window = st.slider("Event Lookback Window (Days)", 10, 60, 30, step=5, 
-                                help="Number of trading days to look back into history to find the institutional block footprint.")
-    
-    vol_threshold = st.slider("Institutional Vol Multiplier", 2.0, 5.0, 3.0, step=0.5, 
-                              help="Filter only days where daily volume was X times greater than its 20-day moving average.")
+    lookback_window = st.slider("Event Lookback Window (Days)", 10, 60, 30, step=5)
+    vol_threshold = st.slider("Institutional Vol Multiplier", 2.0, 5.0, 3.0, step=0.5)
     
     st.divider()
     st.header("3. Accumulation Zone")
-    max_proximity = st.slider("Max Proximity Tolerance (%)", 0.5, 3.0, 2.0, step=0.1, 
-                              help="Flags stocks sitting between -0.5% and this percentage above the institutional cost line.")
+    max_proximity = st.slider("Max Proximity Tolerance (%)", 0.5, 3.0, 2.0, step=0.1)
     
     st.divider()
     run_scan = st.button("🚀 RUN INSTITUTIONAL SCAN", type="primary", use_container_width=True)
 
-# Assign symbol arrays
 target_symbols = load_symbols("NIFTY 50") if "Test" in selected_sector else load_symbols(selected_sector)
 
 # --- CODE EXECUTION CORE ENGINE ---
@@ -117,36 +101,29 @@ if run_scan:
     scanned_opportunities = []
     st.info("📊 Fetching delivery-grade historical data sheets...")
     execution_progress = st.progress(0, text="Initializing database access...")
-    
     total_symbols = len(target_symbols)
     
     for idx, ticker in enumerate(target_symbols):
         clean_ticker = ticker.replace('.NS', '')
-        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker} Accumulation Fields...")
+        execution_progress.progress((idx + 1) / total_symbols, text=f"Analyzing {clean_ticker}...")
         
         try:
-            # Fetch daily data for full structural context
             stock = yf.Ticker(ticker)
             df_daily = stock.history(period='1y', interval='1d')
             
             if df_daily.empty or len(df_daily) < 40:
                 continue
                 
-            # Clean indices
             if df_daily.index.tz is not None: 
                 df_daily.index = df_daily.index.tz_localize(None)
                 
             df_daily = df_daily.ffill().dropna(subset=['Close'])
-            
-            # Run Mathematical Filters
             metrics = process_institutional_floor(df_daily, lookback_window, vol_threshold)
             
             if metrics is None:
                 continue
             
-            # PURE UNBIASED ENTRY FILTER ZONE
-            # We want the stock to be right on the line, allowing a maximum minor undershoot of -0.5% 
-            # and up to the user-selected upper proximity barrier.
+            # Pure Unbiased Entry Filtering
             if -0.5 <= metrics["proximity"] <= max_proximity:
                 scanned_opportunities.append({
                     "Stock Symbol": clean_ticker,
@@ -162,17 +139,9 @@ if run_scan:
             
     execution_progress.empty()
     
-    # --- RENDER RESULTS MATRIX ---
     if scanned_opportunities:
         display_df = pd.DataFrame(scanned_opportunities)
         st.success(f"🛡️ Found **{len(display_df)}** institutional accumulation setups matching your rules.")
         st.dataframe(display_df, use_container_width=True, hide_index=True)
-        
-        st.markdown("""
-        ### 📖 The Professional Execution Rules for These Results:
-        1. **The Entry Matrix:** Select only the top 3 liquid names from this list. Place a **GTT Buy Order** exactly at the *Institutional Cost Basis (₹)*.
-        2. **The Defense Guardrail:** Set a hard, automated GTT Stop Loss **3.5% below your entry price**. If the price drops cleanly past this point, it means the institution has abandoned defending their average cost. Accept it and exit instantly.
-        3. **The Yield Target:** Set a GTT Sell order at **+8% to +10%** from your entry price. Let the institutional buy algorithms drive the recovery run over the next 3 weeks.
-        """)
     else:
-        st.warning("The market is currently extended. No institutions are defending historical cost lines inside your tolerance settings. Try widening the Proximity Tolerance or lowering the Volume Multiplier.")
+        st.warning("No stocks are currently defending historical cost lines inside your tolerance settings.")
