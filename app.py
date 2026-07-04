@@ -5,7 +5,7 @@ import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Institutional S/D Matrix Scanner", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="Institutional S/D & S/R Matrix Scanner", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
@@ -14,10 +14,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🎯 Institutional Supply & Demand Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Asynchronous Order-Block Engine. Locates fresh structural imbalances, base clusters, and breakout extensions.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 TradingView Style Boring Candle & S/R Core Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Asynchronous Multithreaded Engine. Scans F&O and traditional sectors for Multi-Touch S/R and Order Block Imbalances.</p>', unsafe_allow_html=True)
 
-# --- REAL-TIME MULTI-SECTOR LOADER ---
+# --- REAL-TIME MULTI-SECTOR & F&O LOADER ---
 @st.cache_data(ttl=86400)
 def get_sector_symbols(sector_name):
     urls = {
@@ -29,6 +29,28 @@ def get_sector_symbols(sector_name):
         "NIFTY Smallcap 100": "https://archives.nseindia.com/content/indices/ind_niftysmallcap100list.csv",
         "NIFTY 500 (All Sectors)": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     }
+    
+    # Dynamic F&O Engine Extraction Route fallback to known core liquidity derivatives
+    if sector_name == "F&O Active Stocks":
+        try:
+            # Cross-reference full index records to identify top derivative tickers
+            df = pd.read_csv(urls["NIFTY 500 (All Sectors)"])
+            all_symbols = df['Symbol'].tolist()
+            # Backup static map representing core F&O liquidity space for stability
+            fno_backups = [
+                "RELIANCE", "HDFCBANK", "ICICIBANK", "TCS", "INFY", "SBIN", "BHARTIARTL", 
+                "ITC", "LTIM", "MARUTI", "KOTAKBANK", "AXISBANK", "LT", "BAJFINANCE", 
+                "HINDUNILVR", "TATASTEEL", "M&M", "SUNPHARMA", "NTPC", "POWERGRID", 
+                "TATAMOTORS", "ADANIENT", "ADANIPORTS", "COALINDIA", "JIOFIN", "BPCL",
+                "HCLTECH", "ONGC", "TITAN", "ULTRACEMCO", "ASIANPAINT", "GRASIM", "BAJAJFINSV",
+                "WIPRO", "HINDALCO", "JSWSTEEL", "NESTLEIND", "TECHM", "EICHERMOT", "DIVISLAB",
+                "CIPLA", "APOLLOHOSP", "DRREDDY", "BRITANNIA", "BPCL", "INDUSINDBK", "BAJAJ-AUTO"
+            ]
+            # Form list of matching active tokens
+            return [str(symbol).strip() + ".NS" for symbol in all_symbols if symbol in fno_backups or symbol in fno_backups]
+        except Exception:
+            return [str(symbol) + ".NS" for symbol in ["RELIANCE", "HDFCBANK", "ICICIBANK", "TCS", "INFY"]]
+
     try:
         df = pd.read_csv(urls[sector_name])
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol'].tolist()]
@@ -49,13 +71,13 @@ def convert_to_75m(df_15m):
     resampled.index = timestamps
     return resampled
 
-# --- ORDER BLOCK SUPPLY/DEMAND CORING ENGINE ---
-def analyze_supply_demand(ticker, config, tf_choice, min_base, max_base, mode_choice):
+# --- MATHEMATICAL TRADINGVIEW S/D + MULTI-TOUCH S/R ENGINE ---
+def analyze_tv_structure(ticker, config, tf_choice, min_base, max_base, mode_choice, tolerance_pct):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=config["period"], interval=config["interval"])
         
-        if df.empty:
+        if df.empty or len(df) < 30:
             return None
             
         if tf_choice == "75 Min":
@@ -69,26 +91,26 @@ def analyze_supply_demand(ticker, config, tf_choice, min_base, max_base, mode_ch
             
         latest_close = df['Close'].iloc[-1]
         
-        # Calculate structural characteristics per candle
+        # Structure Scanning Metrics
         df['Body'] = (df['Close'] - df['Open']).abs()
         df['Range'] = df['High'] - df['Low']
-        df['Range'] = df['Range'].replace(0, 0.00001) # Avoid division by zero
+        df['Range'] = df['Range'].replace(0, 0.00001)
         df['Body_Ratio'] = df['Body'] / df['Range']
         df['Is_Green'] = df['Close'] > df['Open']
         
-        # Threshold constants
-        BORING_THRESHOLD = 0.50
+        BORING_THRESHOLD = 0.50  # TradingView default baseline body calculation
         
-        # Scan backward from the end of the historical sequence to find structural zones
-        for i in range(len(df) - 10, 10, -1):
-            # Check the "Hero" candle (The leg-out expansion bar)
+        # Walk back through historical pricing vectors
+        for i in range(len(df) - 6, 15, -1):
             hero_idx = i
+            
+            # Identify explosive 'Leg Out / Hero' Marubozu expansion candles
             if df['Body_Ratio'].iloc[hero_idx] <= BORING_THRESHOLD:
                 continue
-            
+                
             is_hero_up = df['Is_Green'].iloc[hero_idx]
             
-            # Count the preceding base (boring) candles
+            # Process back-to-back boring base clusters
             base_count = 0
             base_indices = []
             for j in range(hero_idx - 1, 0, -1):
@@ -101,109 +123,111 @@ def analyze_supply_demand(ticker, config, tf_choice, min_base, max_base, mode_ch
             if not (min_base <= base_count <= max_base):
                 continue
                 
-            # Identify the Leg-In Candle (Pre-base structure)
             leg_in_idx = hero_idx - base_count - 1
             is_leg_in_up = df['Is_Green'].iloc[leg_in_idx]
             
-            # Determine Pattern Structural Classification
+            # Categorize the Imbalance Zone Pattern
             zone_type = None
             structural_pattern = ""
             
-            if is_hero_up: # DEMAND FORMATION
+            if is_hero_up:
                 zone_type = "Demand"
-                if is_leg_in_up:
-                    structural_pattern = "Rally-Base-Rally (RBR)"
-                else:
-                    structural_pattern = "Drop-Base-Rally (DBR)"
-            else: # SUPPLY FORMATION
+                structural_pattern = "Rally-Base-Rally (RBR)" if is_leg_in_up else "Drop-Base-Rally (DBR)"
+            else:
                 zone_type = "Supply"
-                if not is_leg_in_up:
-                    structural_pattern = "Drop-Base-Drop (DBD)"
-                else:
-                    structural_pattern = "Rally-Base-Drop (RBD)"
-                    
-            # Filter layout configuration by interface selection
+                structural_pattern = "Drop-Base-Drop (DBD)" if not is_leg_in_up else "Rally-Base-Drop (RBD)"
+                
             if mode_choice != "All" and mode_choice != zone_type:
                 continue
                 
-            # Define exact parameters of the base zone
             base_candles_df = df.iloc[base_indices]
             zone_proximal = base_candles_df['High'].max() if zone_type == "Demand" else base_candles_df['Low'].min()
             zone_distal = base_candles_df['Low'].min() if zone_type == "Demand" else base_candles_df['High'].max()
             
-            # Freshness / Mitigated Analysis Verification Pipeline
+            # --- EVALUATE MULTI-TOUCH TRADINGVIEW S/R ALIGNMENT ---
+            # Evaluate how many historical candles have touched this S/R line
+            historical_data = df.iloc[:leg_in_idx]
+            touch_count = 0
+            
+            deviation_limit = zone_proximal * (tolerance_pct / 100)
+            
+            for k in range(len(historical_data)):
+                h_high = historical_data['High'].iloc[k]
+                h_low = historical_data['Low'].iloc[k]
+                # If the price level falls within the high/low range of a historical candle
+                if abs(h_high - zone_proximal) <= deviation_limit or abs(h_low - zone_proximal) <= deviation_limit:
+                    touch_count += 1
+            
+            # Filter out weak or completely unconfirmed retail price zones
+            if touch_count < 2: 
+                continue
+                
+            # Check Zone Mitigations / Freshness Status
             post_zone_df = df.iloc[hero_idx + 1:]
             is_fresh = True
             
             if zone_type == "Demand":
-                # If any subsequent low dropped below the proximal boundary before right now
                 if not post_zone_df.empty and post_zone_df['Low'].iloc[:-1].min() <= zone_proximal:
                     is_fresh = False
                 is_currently_in_zone = latest_close <= zone_proximal and latest_close >= zone_distal
             else:
-                # If any subsequent high breached above the proximal boundary before right now
                 if not post_zone_df.empty and post_zone_df['High'].iloc[:-1].max() >= zone_proximal:
                     is_fresh = False
                 is_currently_in_zone = latest_close >= zone_proximal and latest_close <= zone_distal
                 
-            # Retain only fresh configurations or active current-touch footprints
             if is_fresh or is_currently_in_zone:
                 proximity_pct = abs((latest_close - zone_proximal) / zone_proximal) * 100
-                
-                # Check institutional volume strength
-                avg_volume = df['Volume'].iloc[leg_in_idx:hero_idx+1].mean()
-                volume_strength = "🔥 ULTRA LIQUID" if df['Volume'].iloc[hero_idx] > (avg_volume * 1.5) else "STANDARD"
                 
                 return {
                     "Ticker": ticker.replace('.NS', ''),
                     "Zone Type": "🟢 DEMAND" if zone_type == "Demand" else "🔴 SUPPLY",
                     "Pattern Structure": structural_pattern,
                     "Live Price": round(latest_close, 2),
-                    "Proximal Level": round(zone_proximal, 2),
+                    "S/R Proximal Key": round(zone_proximal, 2),
                     "Distal Boundary": round(zone_distal, 2),
-                    "Base Count": int(base_count),
+                    "Base Candles": int(base_count),
+                    "S/R Strength (Touches)": f"⭐ {touch_count} Verified Touches",
                     "Proximity to Zone": f"{round(proximity_pct, 2)}%",
-                    "Status": "✨ FRESH TOUCH ZONE" if is_currently_in_zone else "UNMITIGATED RUNWAY",
-                    "Institutional Vol": volume_strength
+                    "Freshness Status": "✨ FRESH TOUCH" if is_currently_in_zone else "UNMITIGATED ZONE"
                 }
-                
         return None
     except Exception:
         return None
 
 # --- SIDEBAR INTERFACE ---
 with st.sidebar:
-    st.header("1. Target Market Sector")
-    sector_input = st.selectbox("Select NSE Sector Universe:", [
-        "NIFTY 50 (Large Cap)", "NIFTY Next 50", "NIFTY Bank", "NIFTY IT", 
-        "NIFTY Midcap 100", "NIFTY Smallcap 100", "NIFTY 500 (All Sectors)"
+    st.header("1. Target Market Universe")
+    sector_input = st.selectbox("Select Target Segment:", [
+        "F&O Active Stocks", "NIFTY 50 (Large Cap)", "NIFTY Next 50", 
+        "NIFTY Bank", "NIFTY IT", "NIFTY Midcap 100", "NIFTY 500 (All Sectors)"
     ])
     
     st.divider()
-    st.header("2. Fractal Frame Scale")
-    timeframe_input = st.selectbox("Select Core Horizon:", [
+    st.header("2. Fractal Frame Horizon")
+    timeframe_input = st.selectbox("Select Horizon Line:", [
         "15 Min", "75 Min", "Daily", "Weekly", "Monthly"
     ], index=2)
     
     st.divider()
-    st.header("3. Matrix Boundaries")
-    mode_filter = st.selectbox("Target Matrix Track:", ["All", "Demand", "Supply"])
+    st.header("3. TradingView Ind. Settings")
+    mode_filter = st.selectbox("Target Structural Track:", ["All", "Demand", "Supply"])
     
     col1, col2 = st.columns(2)
     with col1:
-        min_base_input = st.number_input("Min Base Bars", min_value=1, max_value=5, value=1)
+        min_base_input = st.number_input("Min Base", min_value=1, max_value=3, value=1)
     with col2:
-        max_base_input = st.number_input("Max Base Bars", min_value=2, max_value=6, value=4)
+        max_base_input = st.number_input("Max Base", min_value=2, max_value=6, value=4)
         
-    threads_count = st.slider("Parallel Server Workers", 10, 30, 20, step=5)
+    sr_tolerance = st.slider("S/R Touch Sensitivity (%)", 0.1, 2.0, 0.5, step=0.1, help="Max percentage deviation allowed to count a candle level as an S/R touch.")
+    threads_count = st.slider("Parallel Workers", 10, 30, 20, step=5)
     
     st.divider()
-    execute_button = st.button("🚀 LAUNCH ORDER BLOCK SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 LAUNCH TV MATRIX SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION CONTROL CONTROLLER ---
 if execute_button:
     symbols_list = get_sector_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** inside **{sector_input}** for fresh tracking vectors...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** inside **{sector_input}** using high-confluence parameters...")
     
     tf_mapping = {
         "15 Min": {"period": "30d", "interval": "15m"},
@@ -216,14 +240,13 @@ if execute_button:
     active_cfg = tf_mapping[timeframe_input]
     confirmed_setups = []
     
-    # --- ASYNCHRONOUS MULTITHREADING PIPELINE ---
-    progress_ui = st.progress(0, text="Spawning institutional order pathways...")
+    progress_ui = st.progress(0, text="Spawning multithreaded pipelines...")
     
     with ThreadPoolExecutor(max_workers=threads_count) as executor:
         futures_map = {
             executor.submit(
-                analyze_supply_demand, ticker, active_cfg, timeframe_input, 
-                min_base_input, max_base_input, mode_filter
+                analyze_tv_structure, ticker, active_cfg, timeframe_input, 
+                min_base_input, max_base_input, mode_filter, sr_tolerance
             ): ticker 
             for ticker in symbols_list
         }
@@ -236,14 +259,14 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Scanning System Tracker: {completed_count}/{len(symbols_list)} Extracted")
+            progress_ui.progress(percent_complete, text=f"Scanning Matrix: {completed_count}/{len(symbols_list)} Extracted")
             
     progress_ui.empty()
     
     # --- DISPLAY ANALYTICAL MATRIX SHEET ---
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        st.success(f"🎯 Order Block Discovery Finished: Isolated **{len(results_df)}** verified imbalances.")
+        st.success(f"🎯 Verified Complete: Isolated **{len(results_df)}** multi-touch structural setups.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks in **{sector_input}** match the required base-candle structure or structural constraints on the current setup.")
+        st.warning(f"No stocks in **{sector_input}** match these structural constraints right now. Try expanding your base boundaries or increasing your S/R sensitivity filter.")
