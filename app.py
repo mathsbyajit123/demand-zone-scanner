@@ -18,29 +18,65 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🏛️ S/R & S/D Confluence Engine (Live Market Edition)</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Includes X-Ray Mode to verify live data flow and relax strict confluence rules.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🏛️ S/R & S/D Confluence Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Includes Advanced Anti-Bot F&O Scraping and 180+ Stock Failsafe.</p>', unsafe_allow_html=True)
 
 # --- LIVE F&O & SECTOR EXTRACTION ---
 @st.cache_data(ttl=43200)
 def get_sector_symbols(sector_name):
     if sector_name == "Live F&O Active Stocks":
+        # Massive fallback list in case NSE completely blocks the cloud server IP
+        fallback_fo = [
+            "AARTIIND.NS", "ABB.NS", "ABBOTINDIA.NS", "ABCAPITAL.NS", "ACC.NS", "ADANIENT.NS", "ADANIPORTS.NS", "ALKEM.NS", "AMBUJACEM.NS", "APOLLOHOSP.NS", 
+            "APOLLOTYRE.NS", "ASHOKLEY.NS", "ASIANPAINT.NS", "ASTRAL.NS", "ATUL.NS", "AUBANK.NS", "AUROPHARMA.NS", "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJAJFINSV.NS", 
+            "BAJFINANCE.NS", "BALKRISIND.NS", "BALRAMCHIN.NS", "BANDHANBNK.NS", "BANKBARODA.NS", "BATAINDIA.NS", "BEL.NS", "BERGEPAINT.NS", "BHARATFORG.NS", 
+            "BHARTIARTL.NS", "BHEL.NS", "BIOCON.NS", "BOSCHLTD.NS", "BPCL.NS", "BRITANNIA.NS", "CANBK.NS", "CANFINHOME.NS", "CHAMBLFERT.NS", "CHOLAFIN.NS", 
+            "CIPLA.NS", "COALINDIA.NS", "COFORGE.NS", "COLPAL.NS", "CONCOR.NS", "COROMANDEL.NS", "CROMPTON.NS", "CUB.NS", "CUMMINSIND.NS", "DABUR.NS", 
+            "DALBHARAT.NS", "DEEPAKNTR.NS", "DIVISLAB.NS", "DIXON.NS", "DLF.NS", "DRREDDY.NS", "EICHERMOT.NS", "ESCORTS.NS", "EXIDEIND.NS", "FEDERALBNK.NS", 
+            "GAIL.NS", "GLENMARK.NS", "GMRINFRA.NS", "GNFC.NS", "GODREJCP.NS", "GODREJPROP.NS", "GRANULES.NS", "GRASIM.NS", "GUJGASLTD.NS", "HAL.NS", 
+            "HAVELLS.NS", "HCLTECH.NS", "HDFCAMC.NS", "HDFCBANK.NS", "HDFCLIFE.NS", "HEROMOTOCO.NS", "HINDALCO.NS", "HINDCOPPER.NS", "HINDPETRO.NS", 
+            "HINDUNILVR.NS", "ICICIBANK.NS", "ICICIGI.NS", "ICICIPRULI.NS", "IDEA.NS", "IDFCFIRSTB.NS", "IEX.NS", "IGL.NS", "INDHOTEL.NS", "INDIACEM.NS", 
+            "INDIGO.NS", "INDUSINDBK.NS", "INDUSTOWER.NS", "INFY.NS", "IOC.NS", "IPCALAB.NS", "IRCTC.NS", "ITC.NS", "JINDALSTEL.NS", "JKCEMENT.NS", 
+            "JSWSTEEL.NS", "JUBLFOOD.NS", "KOTAKBANK.NS", "LALPATHLAB.NS", "LAURUSLABS.NS", "LICHSGFIN.NS", "LT.NS", "LTIM.NS", "LTTS.NS", "LUPIN.NS", 
+            "M&M.NS", "M&MFIN.NS", "MANAPPURAM.NS", "MARICO.NS", "MARUTI.NS", "MCDOWELL-N.NS", "MCX.NS", "METROPOLIS.NS", "MFSL.NS", "MGL.NS", 
+            "MOTHERSON.NS", "MPHASIS.NS", "MRF.NS", "MUTHOOTFIN.NS", "NATIONALUM.NS", "NAUKRI.NS", "NAVINFLUOR.NS", "NESTLEIND.NS", "NMDC.NS", "NTPC.NS", 
+            "OBEROIRLTY.NS", "OFSS.NS", "ONGC.NS", "PAGEIND.NS", "PEL.NS", "PERSISTENT.NS", "PETRONET.NS", "PFC.NS", "PIDILITIND.NS", "PIIND.NS", 
+            "PNB.NS", "POLYCAB.NS", "POWERGRID.NS", "PVRINOX.NS", "RAMCOCEM.NS", "RBLBANK.NS", "RECLTD.NS", "RELIANCE.NS", "SAIL.NS", "SBICARD.NS", 
+            "SBILIFE.NS", "SBIN.NS", "SHREECEM.NS", "SHRIRAMFIN.NS", "SIEMENS.NS", "SRF.NS", "SUNPHARMA.NS", "SUNTV.NS", "SYNGENE.NS", "TATACHEM.NS", 
+            "TATACOMM.NS", "TATACONSUM.NS", "TATAMOTORS.NS", "TATAPOWER.NS", "TATASTEEL.NS", "TCS.NS", "TECHM.NS", "TITAN.NS", "TORNTPHARM.NS", "TRENT.NS", 
+            "TVSMOTOR.NS", "UBL.NS", "ULTRACEMCO.NS", "UPL.NS", "VEDL.NS", "VOLTAS.NS", "WIPRO.NS", "ZEEL.NS", "ZYDUSLIFE.NS"
+        ]
         try:
+            # Create a session to mimic a real browser sequence
+            session = requests.Session()
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/csv'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
             }
+            session.headers.update(headers)
+            
+            # Ping homepage first to grab security cookies
+            session.get("https://www.nseindia.com", timeout=10)
+            
+            # Now request the actual file
             url = "https://archives.nseindia.com/content/fo/fo_mktlots.csv"
-            response = requests.get(url, headers=headers, timeout=10)
+            response = session.get(url, timeout=10)
             
             if response.status_code == 200:
                 df = pd.read_csv(io.StringIO(response.text))
                 df.columns = df.columns.str.strip()
                 symbols = df['SYMBOL'].str.strip().unique()
                 indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
-                return [str(sym) + ".NS" for sym in symbols if sym not in indices]
+                live_list = [str(sym) + ".NS" for sym in symbols if sym not in indices]
+                
+                # If we successfully pulled a large list, return it. Otherwise, fallback.
+                if len(live_list) > 50:
+                    return live_list
+            return fallback_fo
         except Exception:
-            return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS"]
+            # If the cloud server is IP-banned, load the 180+ stock fallback instantly
+            return fallback_fo
 
     urls = {
         "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
@@ -101,11 +137,9 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
             
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         
-        # Bulletproof live market gap handling
         df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low'])
         
         latest_close = df['Close'].iloc[-1]
-        
         sr_zones = map_sr_channels(df, pivot_len, sr_width, min_touches)
         
         df['Body'] = (df['Close'] - df['Open']).abs()
@@ -116,7 +150,6 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
         BORING_THRESHOLD = 0.50
         LEG_OUT_THRESHOLD = 0.60 
         
-        # Look back over the last 20 candles
         for i in range(len(df) - 1, len(df) - 20, -1):
             hero_idx = i
             
@@ -175,7 +208,6 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
                 }
                 
         return None
-        
     except Exception:
         return None
 
@@ -256,4 +288,4 @@ if execute_button:
         st.success(f"🎯 Complete: Found **{len(results_df)}** stocks in {mode_text}.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No active setups found. Try unchecking 'Strict Confluence Mode' to verify the data is flowing.")
+        st.warning("No active setups found. Try unchecking 'Strict Confluence Mode' to verify the data is flowing.")
