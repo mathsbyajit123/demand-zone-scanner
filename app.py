@@ -18,8 +18,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🏛️ S/R & S/D Confluence Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Translates TradingView Pivot Channels and intersects them with explosive Boring Candle bases.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🏛️ S/R & S/D Confluence Engine (Live Market Edition)</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Includes X-Ray Mode to verify live data flow and relax strict confluence rules.</p>', unsafe_allow_html=True)
 
 # --- LIVE F&O & SECTOR EXTRACTION ---
 @st.cache_data(ttl=43200)
@@ -27,7 +27,7 @@ def get_sector_symbols(sector_name):
     if sector_name == "Live F&O Active Stocks":
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'text/csv'
             }
             url = "https://archives.nseindia.com/content/fo/fo_mktlots.csv"
@@ -55,42 +55,43 @@ def get_sector_symbols(sector_name):
 
 # --- PINE SCRIPT S/R CHANNEL ALGORITHM ---
 def map_sr_channels(df, pivot_len, max_width_pct, min_touches):
-    # Find Pivot Highs and Lows (similar to ta.pivothigh / ta.pivotlow)
-    highs = df['High'].values
-    lows = df['Low'].values
-    
-    peak_idx = argrelextrema(highs, np.greater, order=pivot_len)[0]
-    valley_idx = argrelextrema(lows, np.less, order=pivot_len)[0]
-    
-    pivots = np.concatenate((highs[peak_idx], lows[valley_idx]))
-    pivots = np.sort(pivots)
-    
-    if len(pivots) == 0:
-        return []
+    try:
+        highs = df['High'].values
+        lows = df['Low'].values
         
-    channels = []
-    current_cluster = [pivots[0]]
-    
-    for i in range(1, len(pivots)):
-        # If the gap between the current pivot and the cluster base is within the max width
-        if (pivots[i] - current_cluster[0]) / current_cluster[0] <= (max_width_pct / 100.0):
-            current_cluster.append(pivots[i])
-        else:
-            if len(current_cluster) >= min_touches:
-                channels.append({
-                    'floor': min(current_cluster),
-                    'ceiling': max(current_cluster),
-                    'strength': len(current_cluster)
-                })
-            current_cluster = [pivots[i]]
+        peak_idx = argrelextrema(highs, np.greater, order=pivot_len)[0]
+        valley_idx = argrelextrema(lows, np.less, order=pivot_len)[0]
+        
+        pivots = np.concatenate((highs[peak_idx], lows[valley_idx]))
+        pivots = np.sort(pivots)
+        
+        if len(pivots) == 0:
+            return []
             
-    if len(current_cluster) >= min_touches:
-        channels.append({'floor': min(current_cluster), 'ceiling': max(current_cluster), 'strength': len(current_cluster)})
+        channels = []
+        current_cluster = [pivots[0]]
         
-    return channels
+        for i in range(1, len(pivots)):
+            if (pivots[i] - current_cluster[0]) / current_cluster[0] <= (max_width_pct / 100.0):
+                current_cluster.append(pivots[i])
+            else:
+                if len(current_cluster) >= min_touches:
+                    channels.append({
+                        'floor': min(current_cluster),
+                        'ceiling': max(current_cluster),
+                        'strength': len(current_cluster)
+                    })
+                current_cluster = [pivots[i]]
+                
+        if len(current_cluster) >= min_touches:
+            channels.append({'floor': min(current_cluster), 'ceiling': max(current_cluster), 'strength': len(current_cluster)})
+            
+        return channels
+    except Exception:
+        return []
 
 # --- BORING CANDLE CONFLUENCE ALGORITHM ---
-def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touches, min_base, max_base, mode_choice):
+def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touches, min_base, max_base, mode_choice, strict_mode):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
@@ -99,36 +100,31 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
             return None
             
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
-        df = df.ffill().dropna(subset=['Close'])
+        
+        # Bulletproof live market gap handling
+        df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low'])
         
         latest_close = df['Close'].iloc[-1]
         
-        # 1. Map S/R Channels (The Pine Script Logic)
         sr_zones = map_sr_channels(df, pivot_len, sr_width, min_touches)
-        if not sr_zones: return None
         
-        # 2. Map Supply/Demand Boring Bases
         df['Body'] = (df['Close'] - df['Open']).abs()
         df['Range'] = (df['High'] - df['Low']).replace(0, 0.00001)
         df['Body_Ratio'] = df['Body'] / df['Range']
         df['Is_Green'] = df['Close'] > df['Open']
         
         BORING_THRESHOLD = 0.50
-        LEG_OUT_THRESHOLD = 0.60 # Must be a strong explosive candle
+        LEG_OUT_THRESHOLD = 0.60 
         
-        confluence_found = None
-        
-        # Look back over the last 20 candles for a fresh setup
+        # Look back over the last 20 candles
         for i in range(len(df) - 1, len(df) - 20, -1):
             hero_idx = i
             
-            # Leg Out must be strong and non-boring
             if df['Body_Ratio'].iloc[hero_idx] < LEG_OUT_THRESHOLD:
                 continue
                 
             is_hero_up = df['Is_Green'].iloc[hero_idx]
             
-            # Count back-to-back boring candles (the Base)
             base_count = 0
             base_indices = []
             for j in range(hero_idx - 1, hero_idx - 10, -1):
@@ -141,7 +137,6 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
             if not (min_base <= base_count <= max_base):
                 continue
                 
-            # Define S/D Zone Boundaries
             base_candles = df.iloc[base_indices]
             zone_type = "Demand" if is_hero_up else "Supply"
             
@@ -151,19 +146,16 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
             sd_upper = base_candles['High'].max()
             sd_lower = base_candles['Low'].min()
             
-            # 3. INTERSECT: Does this S/D zone overlap with a proven S/R Channel?
             overlapping_sr = None
             for sr in sr_zones:
-                # Math for overlap: max(start1, start2) <= min(end1, end2)
                 if max(sd_lower, sr['floor']) <= min(sd_upper, sr['ceiling']):
                     overlapping_sr = sr
                     break
                     
-            if not overlapping_sr:
-                continue # The setup is not resting on structural S/R
+            if strict_mode and not overlapping_sr:
+                continue 
                 
-            # 4. PROXIMITY: Is live price testing this ultimate confluence zone right now?
-            deviation = sd_upper * 0.01 # 1% buffer zone
+            deviation = sd_upper * 0.015 
             
             is_testing = False
             if zone_type == "Demand" and (sd_upper + deviation) >= latest_close >= sd_lower:
@@ -171,19 +163,18 @@ def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touche
             elif zone_type == "Supply" and (sd_lower - deviation) <= latest_close <= sd_upper:
                 is_testing = True
                 
-            if is_testing:
-                confluence_found = {
+            if not strict_mode or is_testing:
+                return {
                     "Ticker": ticker.replace('.NS', ''),
-                    "Confluence Zone": f"{'🟢' if zone_type == 'Demand' else '🔴'} {zone_type}",
+                    "S/D Zone": f"{'🟢' if zone_type == 'Demand' else '🔴'} {zone_type}",
                     "Live Price": f"₹{round(latest_close, 2)}",
-                    "Base (Boring)": f"{base_count} Candles",
-                    "S/D Zone": f"₹{round(sd_lower, 2)} - ₹{round(sd_upper, 2)}",
-                    "S/R Channel": f"₹{round(overlapping_sr['floor'], 2)} - ₹{round(overlapping_sr['ceiling'], 2)}",
-                    "S/R Strength": f"⭐ {overlapping_sr['strength']} Touches"
+                    "Base": f"{base_count} Candles",
+                    "Zone Bounds": f"₹{round(sd_lower, 2)} - ₹{round(sd_upper, 2)}",
+                    "S/R Channel": f"₹{round(overlapping_sr['floor'], 2)} - ₹{round(overlapping_sr['ceiling'], 2)}" if overlapping_sr else "❌ No S/R Overlap",
+                    "S/R Strength": f"⭐ {overlapping_sr['strength']} Touches" if overlapping_sr else "N/A"
                 }
-                break 
                 
-        return confluence_found
+        return None
         
     except Exception:
         return None
@@ -198,10 +189,10 @@ with st.sidebar:
     tf_input = st.selectbox("Select Chart Horizon:", ["15 Min", "1 Hour", "Daily", "Weekly"])
     
     st.divider()
-    st.header("3. S/R Channel Logic (Pine Script)")
-    pivot_length = st.number_input("Pivot Lookback Period", 5, 30, 10, help="Left/Right bars required to form a Pivot.")
+    st.header("3. S/R Channel Logic")
+    pivot_length = st.number_input("Pivot Lookback", 5, 30, 10)
     sr_width_pct = st.slider("Max Channel Width (%)", 1.0, 10.0, 5.0, step=0.5)
-    min_touches = st.number_input("Min S/R Touches (Strength)", 2, 10, 3)
+    min_touches = st.number_input("Min S/R Touches", 2, 10, 3)
     
     st.divider()
     st.header("4. Boring Candle Logic")
@@ -213,12 +204,16 @@ with st.sidebar:
         max_base_input = st.number_input("Max Base", 2, 6, 4)
         
     st.divider()
+    st.header("5. Engine Mode")
+    strict_toggle = st.checkbox("Strict Confluence Mode", value=False, help="Uncheck to show ALL Boring Candle setups, even if they don't overlap with S/R.")
+        
+    st.divider()
     execute_button = st.button("🚀 EXECUTE CONFLUENCE SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = get_sector_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for S/D & S/R Intersections on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for S/D Zones on the **{tf_input}** chart...")
     
     tf_configs = {
         "15 Min": {"period": "60d", "interval": "15m"},
@@ -235,7 +230,7 @@ if execute_button:
         futures_map = {
             executor.submit(
                 analyze_confluence, ticker, active_cfg["period"], active_cfg["interval"],
-                pivot_length, sr_width_pct, min_touches, min_base_input, max_base_input, mode_filter
+                pivot_length, sr_width_pct, min_touches, min_base_input, max_base_input, mode_filter, strict_toggle
             ): ticker 
             for ticker in symbols_list
         }
@@ -248,17 +243,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Mapping Matrix Confluence: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Mapping Matrix: {completed_count}/{len(symbols_list)}")
             
             if completed_count % 25 == 0:
                 time.sleep(0.5)
             
     progress_ui.empty()
     
-    # --- DISPLAY ANALYTICAL MATRIX SHEET ---
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks where a Boring Candle Base intersects perfectly with an S/R Channel.")
+        mode_text = "Strict Confluence" if strict_toggle else "X-Ray Mode"
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks in {mode_text}.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No active setups found on the {tf_input} timeframe. Finding a tight Boring Candle base directly inside an S/R zone is a rare, platinum-tier setup. Try expanding the Max Channel Width or lowering the Min Touches.")
+        st.warning(f"No active setups found. Try unchecking 'Strict Confluence Mode' to verify the data is flowing.")
