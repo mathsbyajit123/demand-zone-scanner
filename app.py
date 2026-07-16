@@ -5,27 +5,27 @@ import numpy as np
 import requests
 import io
 import time
+from scipy.signal import argrelextrema
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="EMA Dynamics Scanner", layout="wide", page_icon="📈")
+st.set_page_config(page_title="S/R & S/D Confluence Scanner", layout="wide", page_icon="🏛️")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 34px; font-weight: 800; color: #10B981; margin-bottom: 0px; }
+    .main-title { font-size: 34px; font-weight: 800; color: #8B5CF6; margin-bottom: 0px; }
     .sub-title { font-size: 15px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">📈 Advanced EMA Proximity & Channel Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans precise price locations relative to the 10, 20, and 50 EMAs.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🏛️ S/R & S/D Confluence Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Translates TradingView Pivot Channels and intersects them with explosive Boring Candle bases.</p>', unsafe_allow_html=True)
 
-# --- DYNAMIC F&O & SECTOR EXTRACTION ENGINE ---
-@st.cache_data(ttl=43200) # Cache for 12 hours
+# --- LIVE F&O & SECTOR EXTRACTION ---
+@st.cache_data(ttl=43200)
 def get_sector_symbols(sector_name):
     if sector_name == "Live F&O Active Stocks":
         try:
-            # Spoof a real browser to bypass NSE's basic bot protection
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Accept': 'text/csv'
@@ -37,15 +37,11 @@ def get_sector_symbols(sector_name):
                 df = pd.read_csv(io.StringIO(response.text))
                 df.columns = df.columns.str.strip()
                 symbols = df['SYMBOL'].str.strip().unique()
-                
-                # Filter out broad indices, keep only equities
                 indices = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
                 return [str(sym) + ".NS" for sym in symbols if sym not in indices]
         except Exception:
-            st.error("Failed to fetch live F&O list from NSE. Ensure you have an active internet connection.")
             return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS"]
 
-    # Standard Sector Lists
     urls = {
         "NIFTY 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
         "NIFTY 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
@@ -57,73 +53,137 @@ def get_sector_symbols(sector_name):
     except Exception:
         return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS"]
 
-# --- CORE EMA MATH ENGINE ---
-def analyze_ema_structure(ticker, period, interval, strategy, tol_pct, min_dist, max_dist):
+# --- PINE SCRIPT S/R CHANNEL ALGORITHM ---
+def map_sr_channels(df, pivot_len, max_width_pct, min_touches):
+    # Find Pivot Highs and Lows (similar to ta.pivothigh / ta.pivotlow)
+    highs = df['High'].values
+    lows = df['Low'].values
+    
+    peak_idx = argrelextrema(highs, np.greater, order=pivot_len)[0]
+    valley_idx = argrelextrema(lows, np.less, order=pivot_len)[0]
+    
+    pivots = np.concatenate((highs[peak_idx], lows[valley_idx]))
+    pivots = np.sort(pivots)
+    
+    if len(pivots) == 0:
+        return []
+        
+    channels = []
+    current_cluster = [pivots[0]]
+    
+    for i in range(1, len(pivots)):
+        # If the gap between the current pivot and the cluster base is within the max width
+        if (pivots[i] - current_cluster[0]) / current_cluster[0] <= (max_width_pct / 100.0):
+            current_cluster.append(pivots[i])
+        else:
+            if len(current_cluster) >= min_touches:
+                channels.append({
+                    'floor': min(current_cluster),
+                    'ceiling': max(current_cluster),
+                    'strength': len(current_cluster)
+                })
+            current_cluster = [pivots[i]]
+            
+    if len(current_cluster) >= min_touches:
+        channels.append({'floor': min(current_cluster), 'ceiling': max(current_cluster), 'strength': len(current_cluster)})
+        
+    return channels
+
+# --- BORING CANDLE CONFLUENCE ALGORITHM ---
+def analyze_confluence(ticker, period, interval, pivot_len, sr_width, min_touches, min_base, max_base, mode_choice):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 100:
             return None
             
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-            
+        if df.index.tz is not None: df.index = df.index.tz_localize(None)
         df = df.ffill().dropna(subset=['Close'])
         
-        if len(df) < 50:
-            return None
-            
-        # Calculate EMAs
-        ema_10 = df['Close'].ewm(span=10, min_periods=1, adjust=False).mean().iloc[-1]
-        ema_20 = df['Close'].ewm(span=20, min_periods=1, adjust=False).mean().iloc[-1]
-        ema_50 = df['Close'].ewm(span=50, min_periods=1, adjust=False).mean().iloc[-1]
         latest_close = df['Close'].iloc[-1]
         
-        # Determine exact percentage distance from 20 EMA for tracking
-        dist_20_pct = ((latest_close - ema_20) / ema_20) * 100
-        abs_dist_20 = abs(dist_20_pct)
+        # 1. Map S/R Channels (The Pine Script Logic)
+        sr_zones = map_sr_channels(df, pivot_len, sr_width, min_touches)
+        if not sr_zones: return None
         
-        match_found = False
-        strategy_note = ""
+        # 2. Map Supply/Demand Boring Bases
+        df['Body'] = (df['Close'] - df['Open']).abs()
+        df['Range'] = (df['High'] - df['Low']).replace(0, 0.00001)
+        df['Body_Ratio'] = df['Body'] / df['Range']
+        df['Is_Green'] = df['Close'] > df['Open']
         
-        # Evaluate User Strategy
-        if strategy == "Trapped Between 10 & 20 EMA":
-            upper_bound = max(ema_10, ema_20)
-            lower_bound = min(ema_10, ema_20)
-            if lower_bound <= latest_close <= upper_bound:
-                match_found = True
-                strategy_note = "Price floating inside 10-20 Zone"
-                
-        elif strategy == "Trapped Between 20 & 50 EMA":
-            upper_bound = max(ema_20, ema_50)
-            lower_bound = min(ema_20, ema_50)
-            if lower_bound <= latest_close <= upper_bound:
-                match_found = True
-                strategy_note = "Price floating inside 20-50 Zone"
-                
-        elif strategy == "Just Touching 20 EMA":
-            if abs_dist_20 <= tol_pct:
-                match_found = True
-                strategy_note = f"Touching 20 EMA ({round(dist_20_pct, 2)}%)"
-                
-        elif strategy == "Far Away from 20 EMA (Custom %)":
-            if min_dist <= abs_dist_20 <= max_dist:
-                match_found = True
-                dir_icon = "🟢 Above" if dist_20_pct > 0 else "🔴 Below"
-                strategy_note = f"{dir_icon} 20 EMA by {round(abs_dist_20, 2)}%"
-
-        if match_found:
-            return {
-                "Ticker": ticker.replace('.NS', ''),
-                "Live Price": f"₹{round(latest_close, 2)}",
-                "Strategy Trigger": strategy_note,
-                "10 EMA": f"₹{round(ema_10, 2)}",
-                "20 EMA": f"₹{round(ema_20, 2)}",
-                "50 EMA": f"₹{round(ema_50, 2)}"
-            }
+        BORING_THRESHOLD = 0.50
+        LEG_OUT_THRESHOLD = 0.60 # Must be a strong explosive candle
+        
+        confluence_found = None
+        
+        # Look back over the last 20 candles for a fresh setup
+        for i in range(len(df) - 1, len(df) - 20, -1):
+            hero_idx = i
             
-        return None
+            # Leg Out must be strong and non-boring
+            if df['Body_Ratio'].iloc[hero_idx] < LEG_OUT_THRESHOLD:
+                continue
+                
+            is_hero_up = df['Is_Green'].iloc[hero_idx]
+            
+            # Count back-to-back boring candles (the Base)
+            base_count = 0
+            base_indices = []
+            for j in range(hero_idx - 1, hero_idx - 10, -1):
+                if df['Body_Ratio'].iloc[j] <= BORING_THRESHOLD:
+                    base_count += 1
+                    base_indices.append(j)
+                else:
+                    break
+                    
+            if not (min_base <= base_count <= max_base):
+                continue
+                
+            # Define S/D Zone Boundaries
+            base_candles = df.iloc[base_indices]
+            zone_type = "Demand" if is_hero_up else "Supply"
+            
+            if mode_choice != "Both" and mode_choice != zone_type:
+                continue
+                
+            sd_upper = base_candles['High'].max()
+            sd_lower = base_candles['Low'].min()
+            
+            # 3. INTERSECT: Does this S/D zone overlap with a proven S/R Channel?
+            overlapping_sr = None
+            for sr in sr_zones:
+                # Math for overlap: max(start1, start2) <= min(end1, end2)
+                if max(sd_lower, sr['floor']) <= min(sd_upper, sr['ceiling']):
+                    overlapping_sr = sr
+                    break
+                    
+            if not overlapping_sr:
+                continue # The setup is not resting on structural S/R
+                
+            # 4. PROXIMITY: Is live price testing this ultimate confluence zone right now?
+            deviation = sd_upper * 0.01 # 1% buffer zone
+            
+            is_testing = False
+            if zone_type == "Demand" and (sd_upper + deviation) >= latest_close >= sd_lower:
+                is_testing = True
+            elif zone_type == "Supply" and (sd_lower - deviation) <= latest_close <= sd_upper:
+                is_testing = True
+                
+            if is_testing:
+                confluence_found = {
+                    "Ticker": ticker.replace('.NS', ''),
+                    "Confluence Zone": f"{'🟢' if zone_type == 'Demand' else '🔴'} {zone_type}",
+                    "Live Price": f"₹{round(latest_close, 2)}",
+                    "Base (Boring)": f"{base_count} Candles",
+                    "S/D Zone": f"₹{round(sd_lower, 2)} - ₹{round(sd_upper, 2)}",
+                    "S/R Channel": f"₹{round(overlapping_sr['floor'], 2)} - ₹{round(overlapping_sr['ceiling'], 2)}",
+                    "S/R Strength": f"⭐ {overlapping_sr['strength']} Touches"
+                }
+                break 
+                
+        return confluence_found
         
     except Exception:
         return None
@@ -134,60 +194,48 @@ with st.sidebar:
     sector_input = st.selectbox("Market Index", ["Live F&O Active Stocks", "NIFTY 50", "NIFTY 500"])
     
     st.divider()
-    st.header("2. Horizon (Timeframe)")
-    tf_input = st.selectbox("Execution Chart:", ["Daily", "Weekly", "Monthly"])
+    st.header("2. Execution Timeframe")
+    tf_input = st.selectbox("Select Chart Horizon:", ["15 Min", "1 Hour", "Daily", "Weekly"])
     
     st.divider()
-    st.header("3. EMA Setup Logic")
-    strategy_input = st.radio("Select Strategy:", [
-        "Trapped Between 10 & 20 EMA",
-        "Trapped Between 20 & 50 EMA",
-        "Just Touching 20 EMA",
-        "Far Away from 20 EMA (Custom %)"
-    ])
+    st.header("3. S/R Channel Logic (Pine Script)")
+    pivot_length = st.number_input("Pivot Lookback Period", 5, 30, 10, help="Left/Right bars required to form a Pivot.")
+    sr_width_pct = st.slider("Max Channel Width (%)", 1.0, 10.0, 5.0, step=0.5)
+    min_touches = st.number_input("Min S/R Touches (Strength)", 2, 10, 3)
     
-    # Show specific sliders only when their strategy is selected
-    if strategy_input == "Just Touching 20 EMA":
-        touch_tolerance = st.slider("Tolerance (± %)", 0.1, 2.0, 0.5, step=0.1, help="Max distance price can be from the 20 EMA to count as a touch.")
-    else:
-        touch_tolerance = 0.5 # Default fallback
-        
-    if strategy_input == "Far Away from 20 EMA (Custom %)":
-        col1, col2 = st.columns(2)
-        with col1:
-            min_distance = st.number_input("Min % Away", min_value=0.1, max_value=20.0, value=1.0, step=0.5)
-        with col2:
-            max_distance = st.number_input("Max % Away", min_value=1.0, max_value=50.0, value=2.0, step=0.5)
-    else:
-        min_distance = 1.0
-        max_distance = 2.0
+    st.divider()
+    st.header("4. Boring Candle Logic")
+    mode_filter = st.selectbox("Zone Direction:", ["Both", "Demand", "Supply"])
+    col1, col2 = st.columns(2)
+    with col1:
+        min_base_input = st.number_input("Min Base", 1, 3, 1)
+    with col2:
+        max_base_input = st.number_input("Max Base", 2, 6, 4)
         
     st.divider()
-    execute_button = st.button("🚀 EXECUTE EMA SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE CONFLUENCE SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = get_sector_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for S/D & S/R Intersections on the **{tf_input}** chart...")
     
-    # Configure Timeframes
     tf_configs = {
-        "Daily": {"period": "2y", "interval": "1d"},
-        "Weekly": {"period": "5y", "interval": "1wk"},
-        "Monthly": {"period": "10y", "interval": "1mo"}
+        "15 Min": {"period": "60d", "interval": "15m"},
+        "1 Hour": {"period": "730d", "interval": "1h"},
+        "Daily": {"period": "3y", "interval": "1d"},
+        "Weekly": {"period": "10y", "interval": "1wk"}
     }
     active_cfg = tf_configs[tf_input]
     
     confirmed_setups = []
     progress_ui = st.progress(0, text="Igniting engine...")
     
-    # Threading for speed
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures_map = {
             executor.submit(
-                analyze_ema_structure, ticker, 
-                active_cfg["period"], active_cfg["interval"], 
-                strategy_input, touch_tolerance, min_distance, max_distance
+                analyze_confluence, ticker, active_cfg["period"], active_cfg["interval"],
+                pivot_length, sr_width_pct, min_touches, min_base_input, max_base_input, mode_filter
             ): ticker 
             for ticker in symbols_list
         }
@@ -200,18 +248,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Evaluating EMA Proximity: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Mapping Matrix Confluence: {completed_count}/{len(symbols_list)}")
             
-            # Anti-ban throttle
-            if completed_count % 30 == 0:
-                time.sleep(0.3)
+            if completed_count % 25 == 0:
+                time.sleep(0.5)
             
     progress_ui.empty()
     
     # --- DISPLAY ANALYTICAL MATRIX SHEET ---
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks matching your exact EMA criteria.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks where a Boring Candle Base intersects perfectly with an S/R Channel.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks currently match this specific EMA logic on the {tf_input} timeframe. Try adjusting your tolerances.")
+        st.warning(f"No active setups found on the {tf_input} timeframe. Finding a tight Boring Candle base directly inside an S/R zone is a rare, platinum-tier setup. Try expanding the Max Channel Width or lowering the Min Touches.")
