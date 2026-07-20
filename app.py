@@ -7,7 +7,7 @@ from scipy.signal import argrelextrema
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Role Reversal Scanner", layout="wide", page_icon="🔄")
+st.set_page_config(page_title="Human-Like S/R Role Reversal Engine", layout="wide", page_icon="🧠")
 
 st.markdown("""
     <style>
@@ -16,8 +16,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🔄 Institutional Role Reversal Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Hunts for old Resistance ceilings (3-5 touches) that broke and are now being retested as Demand floors.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🧠 Human-Like S/R Role Reversal Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Scans for major 3-4 touch resistance ceilings with 5%-10%+ deep pullbacks, breakout confirmation, and 20/50 EMA retests.</p>', unsafe_allow_html=True)
 
 # --- DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -34,74 +34,137 @@ def load_symbols(category):
     except Exception:
         return ["RELIANCE.NS", "HDFCBANK.NS", "TCS.NS", "INFY.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "LT.NS"]
 
-# --- PIVOT CLUSTERING ALGORITHM ---
-def get_tight_clusters(pivots, max_width_pct, min_touches, max_touches):
-    if len(pivots) == 0: return []
-    pivots = np.sort(pivots)
-    clusters = []
-    current_cluster = [pivots[0]]
+# --- HUMAN-LIKE PIVOT DETECTION ---
+def find_human_like_ceilings(df, min_dip_pct, min_touches, max_touches, tolerance_pct):
+    highs = df['High'].values
+    lows = df['Low'].values
     
-    for i in range(1, len(pivots)):
-        cluster_bottom = current_cluster[0]
-        width_pct = ((pivots[i] - cluster_bottom) / cluster_bottom) * 100
+    # Use a wider window (order=10) to identify macro swing peaks
+    peak_indices = argrelextrema(highs, np.greater, order=10)[0]
+    if len(peak_indices) < min_touches:
+        return []
+    
+    # Filter peaks: Each peak MUST have a deep drop (5%-10%+) following it or preceding it
+    valid_peaks = []
+    for p_idx in range(len(peak_indices)):
+        curr_idx = peak_indices[p_idx]
+        peak_price = highs[curr_idx]
         
-        if width_pct <= max_width_pct:
-            current_cluster.append(pivots[i])
+        # Look at the trough between this peak and the next peak (or recent low)
+        if p_idx < len(peak_indices) - 1:
+            next_idx = peak_indices[p_idx + 1]
+            trough_price = lows[curr_idx:next_idx].min()
         else:
-            if min_touches <= len(current_cluster) <= max_touches:
-                clusters.append({'bottom': min(current_cluster), 'top': max(current_cluster), 'touches': len(current_cluster)})
-            current_cluster = [pivots[i]]
+            trough_price = lows[curr_idx:].min()
             
-    if min_touches <= len(current_cluster) <= max_touches:
-        clusters.append({'bottom': min(current_cluster), 'top': max(current_cluster), 'touches': len(current_cluster)})
+        dip_depth = ((peak_price - trough_price) / peak_price) * 100.0
+        
+        # Only keep peaks that had a legitimate human-visible drop
+        if dip_depth >= min_dip_pct:
+            valid_peaks.append({
+                'index': curr_idx,
+                'price': peak_price,
+                'dip': dip_depth
+            })
+            
+    if len(valid_peaks) < min_touches:
+        return []
+    
+    # Cluster valid deep-dip peaks into horizontal ceiling zones
+    prices = np.array([p['price'] for p in valid_peaks])
+    indices = np.array([p['index'] for p in valid_peaks])
+    
+    clusters = []
+    used_indices = set()
+    
+    for i in range(len(prices)):
+        if i in used_indices: continue
+        
+        base_price = prices[i]
+        cluster_peaks = [prices[i]]
+        cluster_idxs = [indices[i]]
+        used_indices.add(i)
+        
+        for j in range(i + 1, len(prices)):
+            if j in used_indices: continue
+            # Check if this peak sits within the tolerance range of the ceiling
+            if abs(prices[j] - base_price) / base_price * 100.0 <= tolerance_pct:
+                cluster_peaks.append(prices[j])
+                cluster_idxs.append(indices[j])
+                used_indices.add(j)
+                
+        if min_touches <= len(cluster_peaks) <= max_touches:
+            clusters.append({
+                'bottom': min(cluster_peaks),
+                'top': max(cluster_peaks),
+                'touches': len(cluster_peaks),
+                'last_touch_idx': max(cluster_idxs)
+            })
+            
     return clusters
 
-# --- ROLE REVERSAL ENGINE ---
-def analyze_role_reversal(ticker, period, interval, pivot_len, max_width, min_touches, max_touches, entry_buffer):
+# --- MASTER HUMAN-LIKE ENGINE ---
+def analyze_human_like_sr(ticker, period, interval, min_dip_pct, min_touches, max_touches, slope_min, entry_buffer):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
-        if df.empty or len(df) < 100: return None
+        if df.empty or len(df) < 120: return None
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
+        df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
-        df = df.ffill().dropna(subset=['Close', 'High', 'Low'])
         latest_close = df['Close'].iloc[-1]
+        latest_low = df['Low'].iloc[-1]
         
-        # 1. Identify Raw Swing Highs (Historical Resistance)
-        highs = df['High'].values
-        peak_idx = argrelextrema(highs, np.greater, order=pivot_len)[0]
-        raw_resistances = highs[peak_idx]
+        # 1. EMA TREND & MOMENTUM SLOPE
+        df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
         
-        # 2. Cluster Pivots into Tight Resistance Zones (Requiring exactly 3 to 5 touches)
-        resistance_zones = get_tight_clusters(raw_resistances, max_width, min_touches, max_touches)
+        ema_20_live = df['EMA_20'].iloc[-1]
+        ema_50_live = df['EMA_50'].iloc[-1]
         
-        for rz in resistance_zones:
-            # 3. Check Breakout Condition: Did the price eventually break significantly above this resistance?
-            highest_close = df['Close'].max()
-            breakout_margin = rz['top'] * 1.05 # Price must have gone at least 5% above the zone to prove a true breakout
+        # Condition A: 20 EMA > 50 EMA
+        if ema_20_live <= ema_50_live: return None
             
-            if highest_close > breakout_margin:
+        # Condition B: ~45 Degree Upward Slope (20 EMA rising over last 5 bars)
+        ema_20_past = df['EMA_20'].iloc[-5]
+        slope_pct = ((ema_20_live - ema_20_past) / ema_20_past) * 100.0
+        if slope_pct < slope_min: return None
+            
+        # Condition C: Price pulling back into the 20/50 EMA corridor
+        if not (latest_low <= ema_20_live and latest_close >= (ema_50_live * 0.995)): return None
+
+        # 2. HUMAN-LIKE CEILING DETECTION (Deep Dips + 3-4 Touches)
+        ceilings = find_human_like_ceilings(df, min_dip_pct, min_touches, max_touches, tolerance_pct=2.0)
+        if not ceilings: return None
+            
+        for ceiling in ceilings:
+            c_top = ceiling['top']
+            c_bottom = ceiling['bottom']
+            last_touch = ceiling['last_touch_idx']
+            
+            # Condition D: Breakout Confirmation (Must have closed at least 2% above the ceiling after the last touch)
+            post_ceiling_df = df.iloc[last_touch:]
+            if post_ceiling_df['Close'].max() < (c_top * 1.02):
+                continue # No clear breakout happened
                 
-                # 4. Check Retest Condition: Is live price currently falling back into this old resistance?
-                buffer_val = rz['top'] * (entry_buffer / 100.0)
+            # Condition E: Current Retest (Price pulling back to test broken ceiling as Demand)
+            buffer_val = c_top * (entry_buffer / 100.0)
+            
+            # Live price is sitting on or slightly above the broken ceiling
+            if (c_bottom - buffer_val) <= latest_close <= (c_top + buffer_val):
+                dist_pct = ((latest_close - c_top) / c_top) * 100.0
                 
-                # The live price must be dropping into the top of the zone, or sitting inside it.
-                if rz['bottom'] <= latest_close <= (rz['top'] + buffer_val):
-                    
-                    # Ensure it is currently a pullback (price is down from recent highs)
-                    recent_high = df['High'].iloc[-15:].max()
-                    if recent_high > (rz['top'] + buffer_val):
-                        
-                        dist_pct = ((latest_close - rz['top']) / rz['top']) * 100
-                        return {
-                            "Ticker": ticker.replace('.NS', ''),
-                            "Status": "🔄 VALID ROLE REVERSAL",
-                            "Live Price": f"₹{round(latest_close, 2)}",
-                            "Zone (Old Ceiling -> New Floor)": f"₹{round(rz['bottom'], 2)} - ₹{round(rz['top'], 2)}",
-                            "Historical Touches": f"⭐ {rz['touches']} Resistance Rejections",
-                            "Distance to Zone Top": f"+{round(dist_pct, 2)}%"
-                        }
+                return {
+                    "Ticker": ticker.replace('.NS', ''),
+                    "Status": f"🔄 ROLE REVERSAL ({ceiling['touches']} Touches)",
+                    "Live Price": f"₹{round(latest_close, 2)}",
+                    "Old Ceiling (New Demand)": f"₹{round(c_bottom, 2)} - ₹{round(c_top, 2)}",
+                    "Min Dip Depth": f"📉 >{min_dip_pct}% Pullbacks",
+                    "20 EMA Slope": f"📈 +{round(slope_pct, 2)}% / 5 Bars",
+                    "Distance to Zone": f"{round(dist_pct, 2)}%"
+                }
+                
         return None
     except Exception:
         return None
@@ -112,34 +175,38 @@ with st.sidebar:
     sector_input = st.selectbox("Market Universe", ["NIFTY 500", "NIFTY 50", "NIFTY MIDCAP 100", "NIFTY SMALLCAP 250"])
     
     st.divider()
-    st.header("2. Execution Horizon")
-    # Restricted to the Higher Timeframes requested
-    tf_input = st.selectbox("Select Timeframe:", ["1D", "1W", "1M"], index=0)
+    st.header("2. Timeframe Selection")
+    tf_input = st.selectbox("Select Horizon:", ["1D", "1W", "1M", "1 Hour", "15 Minutes"], index=0)
     
     st.divider()
-    st.header("3. Resistance Structure")
+    st.header("3. Human-Like Swing Rules")
     col1, col2 = st.columns(2)
     with col1:
-        min_touches = st.number_input("Min Touches", 2, 10, 3)
+        min_touches = st.number_input("Min Touches", 2, 6, 3)
     with col2:
-        max_touches = st.number_input("Max Touches", 3, 15, 5)
+        max_touches = st.number_input("Max Touches", 3, 10, 4)
         
-    pivot_length = st.number_input("Pivot Lookback (Bars)", 3, 30, 8, help="How many bars left and right define a swing high.")
+    min_dip_pct = st.slider("Min Pullback Depth Between Touches (%)", 3.0, 15.0, 5.0, step=0.5, 
+                            help="Requires price to drop by at least this percentage between touches to eliminate noise.")
     
     st.divider()
-    st.header("4. Retest Entry Parameters")
-    max_zone_width = st.slider("Max Zone Width (%)", 0.1, 5.0, 2.0, step=0.1, help="Keeps the historical resistance ceiling tight.")
-    entry_buffer = st.slider("Entry Buffer Tolerance (%)", 0.0, 5.0, 1.5, step=0.1, help="How far above the top of the zone can the live price be to trigger an alert.")
+    st.header("4. EMA Corridor & Slope")
+    slope_min = st.slider("Min 20 EMA Upward Slope (%)", 0.1, 3.0, 0.8, step=0.1, 
+                          help="Verifies a strong ~45 degree uptrend.")
+    entry_buffer = st.slider("Retest Buffer (%)", 0.0, 4.0, 1.5, step=0.1, 
+                             help="How far above the broken ceiling the live price can be.")
         
     st.divider()
-    execute_button = st.button("🚀 EXECUTE RETEST SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE HUMAN S/R SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for Break & Retest Setups on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for Human-Like Role Reversals on the **{tf_input}** chart...")
     
     tf_configs = {
+        "15 Minutes": {"period": "60d", "interval": "15m"},
+        "1 Hour": {"period": "730d", "interval": "1h"},
         "1D": {"period": "3y", "interval": "1d"},
         "1W": {"period": "10y", "interval": "1wk"},
         "1M": {"period": "20y", "interval": "1mo"}
@@ -152,8 +219,8 @@ if execute_button:
     with ThreadPoolExecutor(max_workers=20) as executor:
         futures_map = {
             executor.submit(
-                analyze_role_reversal, ticker, active_cfg["period"], active_cfg["interval"],
-                pivot_length, max_zone_width, min_touches, max_touches, entry_buffer
+                analyze_human_like_sr, ticker, active_cfg["period"], active_cfg["interval"],
+                min_dip_pct, min_touches, max_touches, slope_min, entry_buffer
             ): ticker 
             for ticker in symbols_list
         }
@@ -166,7 +233,7 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Analyzing Role Reversals: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Analyzing Deep Swing Ceilings: {completed_count}/{len(symbols_list)}")
             
             if completed_count % 40 == 0:
                 time.sleep(0.3)
@@ -175,7 +242,7 @@ if execute_button:
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks actively testing an old Resistance as a new Support.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks retesting verified 3-4 touch ceilings with 5%+ dips.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning("No stocks are currently pulling back perfectly into a 3-5 touch resistance floor. Try expanding the Entry Buffer or lowering the Pivot Lookback.")
+        st.warning("No stocks currently match these strict criteria. Requiring 3-4 distinct ceiling touches with >5% drops in between + a breakout + an EMA retest is a very strict filter. Try dropping 'Min Pullback Depth' to 3.5% or 4.0%.")
