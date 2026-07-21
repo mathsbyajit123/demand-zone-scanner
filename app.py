@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="Weekly Trend & Demand Zone Scanner", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="Strict Demand Zone Scanner", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
@@ -18,8 +18,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🎯 Institutional Demand Zone Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans for Weekly Upward Trend + Daily Boring Candle Base + High-Volume Leg-Out + Fresh Low-Volume Retrace.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 Strict Institutional Demand Zone Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Strict Filter: Weekly Uptrend + Max 1–3 Base Candles + Tight Wicks (Zone Width ≤ 2.5%) + Low-Volume Retrace.</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -45,7 +45,7 @@ def load_symbols(category):
         ]
 
 # --- STRATEGY ALGORITHM ---
-def analyze_stock_setup(ticker):
+def analyze_stock_setup(ticker, max_zone_width_pct=2.5):
     try:
         stock = yf.Ticker(ticker)
         df_daily = stock.history(period="1y", interval="1d")
@@ -93,7 +93,6 @@ def analyze_stock_setup(ticker):
 
         recent = df.iloc[-30:].copy()
         
-        # Look for Leg-Out and Base within recent 30 sessions
         for i in range(4, len(recent) - 1):
             leg_out = recent.iloc[i]
             
@@ -107,21 +106,25 @@ def analyze_stock_setup(ticker):
             if not is_leg_out:
                 continue
 
-            # Check 1 to 3 candles immediately to the left for Boring Candle(s)
+            # --- STRICT RULE 1: COUNT ALL CONSECUTIVE BASE CANDLES ---
             base_candles = []
-            for k in range(1, 4):
-                prev_candle = recent.iloc[i - k]
-                if prev_candle['Is_Boring']:
-                    base_candles.append(prev_candle)
-                else:
-                    break
+            k = 1
+            while (i - k) >= 0 and recent.iloc[i - k]['Is_Boring']:
+                base_candles.append(recent.iloc[i - k])
+                k += 1
             
-            if len(base_candles) == 0:
-                continue # No base found
+            # Reject if base has 0 or MORE THAN 3 candles (discards 4 to 10+ candle bases)
+            if len(base_candles) < 1 or len(base_candles) > 3:
+                continue
 
             # Define Zone Boundaries
-            proximal_line = max([max(c['Open'], c['Close']) for c in base_candles]) # Entry Trigger
-            distal_line = min([c['Low'] for c in base_candles])                   # Base Low
+            proximal_line = max([max(c['Open'], c['Close']) for c in base_candles]) # Entry
+            distal_line = min([c['Low'] for c in base_candles])                   # Base Lowest Wick
+
+            # --- STRICT RULE 2: TIGHT ZONE WIDTH (MAX 2.5% FROM TOP TO WICK LOW) ---
+            zone_width_pct = ((proximal_line - distal_line) / proximal_line) * 100
+            if zone_width_pct > max_zone_width_pct:
+                continue # Rejects wide zones caused by long wicks
 
             # -------------------------------------------------------------
             # 3. FRESHNESS & RETRACE VERIFICATION
@@ -135,35 +138,35 @@ def analyze_stock_setup(ticker):
             current_vol = recent['Volume'].iloc[-1]
             avg_vol_latest = recent['Avg_Vol'].iloc[-1]
 
-            # Freshness Check: Price hasn't broken below the Distal Line (Zone Intact)
+            # Freshness Check: Price hasn't broken below Distal Line (Zone intact)
             if min_low_after < distal_line:
                 continue
 
-            # Retrace Check: Current price is within or near entry zone (+3% buffer)
-            is_near_zone = (current_close >= distal_line) and (current_close <= proximal_line * 1.03)
+            # Retrace Check: Current price is within or near entry zone (+2% buffer)
+            is_near_zone = (current_close >= distal_line) and (current_close <= proximal_line * 1.02)
             
-            # Low Volume Check: Retrace volume is controlled (<= 1.2x average)
+            # Low Volume Check: Retrace volume is controlled
             low_retrace_vol = current_vol <= (avg_vol_latest * 1.2)
 
             if is_near_zone and low_retrace_vol:
                 entry_price = round(proximal_line, 2)
-                stop_loss = round(distal_line * 0.995, 2) # 0.5% buffer
+                stop_loss = round(distal_line * 0.995, 2) # 0.5% safety buffer
                 risk_per_share = round(entry_price - stop_loss, 2)
                 risk_pct = round((risk_per_share / entry_price) * 100, 2)
                 
-                target_1 = round(entry_price + (2 * risk_per_share), 2) # 1:2 RR
-                target_2 = round(entry_price + (4 * risk_per_share), 2) # 1:4 RR
+                target_1 = round(entry_price + (2 * risk_per_share), 2)
+                target_2 = round(entry_price + (4 * risk_per_share), 2)
 
                 return {
                     "Ticker": ticker.replace('.NS', ''),
                     "Live Price": f"₹{round(current_close, 2)}",
                     "Entry Zone (GTT)": f"₹{entry_price}",
                     "Stop Loss": f"₹{stop_loss}",
-                    "Risk %": f"{risk_pct}%",
-                    "Target 1 (1:2 RR)": f"₹{target_1}",
-                    "Target 2 (1:4 RR)": f"₹{target_2}",
-                    "Weekly Trend": "🟢 21 > 44 EMA Up",
-                    "Status": "✅ Fresh Zone Retrace"
+                    "Base Candles": f"{len(base_candles)} Base(s)",
+                    "Zone Width": f"{round(zone_width_pct, 2)}%",
+                    "Target 1 (1:2)": f"₹{target_1}",
+                    "Target 2 (1:4)": f"₹{target_2}",
+                    "Status": "✅ Fresh & Tight Zone"
                 }
 
         return None
@@ -180,32 +183,31 @@ with st.sidebar:
     ])
     
     st.divider()
-    st.header("2. Strategy Parameters")
+    st.header("2. Strictness Settings")
+    max_width = st.slider("Max Zone Width % (Wicks):", min_value=1.0, max_value=4.0, value=2.5, step=0.1)
+    
     st.markdown("""
-    * **Weekly Trend:** Price > 21 EMA > 44 EMA
-    * **Daily Base:** Body $\le$ 50% of range (1–3 candles)
-    * **Leg-Out:** Strong green candle + High Volume
-    * **Freshness:** Untested demand zone
-    * **Retrace:** Low volume pullback into zone
+    * **Base Candles:** Strictly **1 to 3** max.
+    * **Zone Width:** Capped at **≤ 2.5%** (prevents wide wicks).
+    * **Weekly Trend:** Price > 21 EMA > 44 EMA.
     """)
     
     st.divider()
-    execute_button = st.button("🚀 EXECUTE DEMAND SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE STRICT SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** across **{sector_input}**...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** with **Max {max_width}% Zone Width**...")
     
     confirmed_setups = []
-    progress_ui = st.progress(0, text="Initializing scanner...")
+    progress_ui = st.progress(0, text="Filtering charts...")
     
     start_time = time.time()
     
-    # Run multi-threaded scanner
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
-            executor.submit(analyze_stock_setup, ticker): ticker for ticker in symbols_list
+            executor.submit(analyze_stock_setup, ticker, max_width): ticker for ticker in symbols_list
         }
         
         completed_count = 0
@@ -225,7 +227,7 @@ if execute_button:
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        st.success(f"🎯 Scan Complete in **{elapsed_time}s**: Found **{len(results_df)}** setup(s) meeting all rules!")
+        st.success(f"🎯 Scan Complete in **{elapsed_time}s**: Found **{len(results_df)}** high-quality tight setup(s)!")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks strictly matched all criteria today (Completed in {elapsed_time}s). This happens naturally during market pullbacks or chop.")
+        st.warning(f"No stocks passed all strict rules today ({elapsed_time}s). This ensures you only trade top 1% tight zones!")
