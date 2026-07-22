@@ -5,21 +5,20 @@ import numpy as np
 import time
 import requests
 import io
-from scipy.signal import argrelextrema
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="200 EMA Liquidity Sweep Scanner", layout="wide", page_icon="🐋")
+st.set_page_config(page_title="21/44 EMA Low-Vol Pullback Scanner", layout="wide", page_icon="🪃")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 34px; font-weight: 800; color: #0EA5E9; margin-bottom: 0px; }
+    .main-title { font-size: 34px; font-weight: 800; color: #10B981; margin-bottom: 0px; }
     .sub-title { font-size: 15px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🐋 200 EMA "W" Liquidity Sweep Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Hunts for institutional stop-hunts: W-patterns that sweep below the 200 EMA on low volume, close above it, and break out with massive volume.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🪃 21/44 EMA Low-Volume Accumulation Scanner</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Scans for stocks in strong uptrends (21 > 44 EMA) pulling back to the 21/44 EMA zone on extremely low volume.</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -43,116 +42,96 @@ def load_symbols(category):
         st.sidebar.warning("⚠️ NSE Server blocked full list. Using liquid failsafe stocks.")
         return ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'ITC.NS', 'LT.NS', 'SBIN.NS', 'BHARTIARTL.NS']
 
-# --- INSTITUTIONAL "W" SWEEP ALGORITHM ---
-def analyze_liquidity_sweep(ticker, period, interval):
+# --- LOW VOLUME RETRACEMENT ALGORITHM ---
+def analyze_ema_pullback(ticker, period, interval):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
-        # We need at least 200 bars to accurately calculate the 200 EMA
-        if df.empty or len(df) < 250: return None
+        if df.empty or len(df) < 60: return None
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
-        # Calculate the 200 EMA and 20-period Average Volume
-        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        # Calculate 21 and 44 EMAs + 20-period Volume Average
+        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
         df['Vol_Avg'] = df['Volume'].rolling(20).mean()
         
-        # Focus on the recent price action (last 45 bars) to find the W pattern
-        recent = df.iloc[-45:].copy()
-        recent.reset_index(inplace=True)
+        latest_close = df['Close'].iloc[-1]
+        latest_low = df['Low'].iloc[-1]
+        ema21_live = df['EMA_21'].iloc[-1]
+        ema44_live = df['EMA_44'].iloc[-1]
+        vol_avg_live = df['Vol_Avg'].iloc[-1]
         
-        # 1. Find all local swing lows in this recent period
-        lows_idx = argrelextrema(recent['Low'].values, np.less, order=3)[0]
-        
-        # 2. Filter for sweeps: Low must wick below/touch 200 EMA, but Close MUST be above it
-        valid_sweeps = []
-        for idx in lows_idx:
-            row = recent.iloc[idx]
-            # Price sweeps near/below 200 EMA but closes above it (no strong closes below)
-            if row['Low'] <= (row['EMA_200'] * 1.01) and row['Close'] >= (row['EMA_200'] * 0.99):
-                valid_sweeps.append(idx)
-                
-        # We need a "W" pattern, so we need at least 2 touches/sweeps
-        if len(valid_sweeps) >= 2:
-            leg1_idx = valid_sweeps[-2] # First bottom of the W
-            leg2_idx = valid_sweeps[-1] # Second bottom of the W
+        # Rule 1: Uptrend Filter (21 EMA must be strictly above 44 EMA)
+        if ema21_live <= ema44_live:
+            return None
             
-            # Must be separated by a few bars to form a proper W
-            if leg2_idx - leg1_idx >= 4:
+        # Rule 2: Prior Expansion Check (Must have had a move/rally above 21 EMA in the last 15 candles)
+        recent_high_15 = df['High'].iloc[-15:].max()
+        if recent_high_15 < (ema21_live * 1.025): # At least 2.5% move above the 21 EMA
+            return None
+            
+        # Rule 3: Retracement Condition (Price pulled back to or inside the 21 EMA - 44 EMA band)
+        # Low is touching/below 21 EMA, but Close is holding above or near 44 EMA
+        is_pullback_zone = (latest_low <= (ema21_live * 1.005)) and (latest_close >= (ema44_live * 0.99))
+        if not is_pullback_zone:
+            return None
+            
+        # Rule 4: Volume Dry-Up (Average volume over the last 3 pullback bars is noticeably lower than 20-period Avg)
+        pullback_vol_avg = df['Volume'].iloc[-3:].mean()
+        
+        # Pullback volume must be < 80% of the 20-period average volume
+        if pullback_vol_avg >= (vol_avg_live * 0.80):
+            return None
+            
+        vol_dryup_pct = round((pullback_vol_avg / vol_avg_live) * 100, 1)
+        
+        return {
+            "Ticker": ticker.replace('.NS', ''),
+            "Live Price": f"₹{round(latest_close, 2)}",
+            "EMA Trend": "✅ 21 EMA > 44 EMA",
+            "Zone Status": "🎯 Testing 21/44 EMA Band",
+            "Retracement Volume": f"🔇 {vol_dryup_pct}% of Avg Vol (Dry)",
+            "Action": "🟢 Watch for Reversal Candle"
+        }
                 
-                # 3. Find the Neckline (the swing high between the two bottoms)
-                neckline = recent['High'].iloc[leg1_idx:leg2_idx].max()
-                
-                # 4. Check Liquidity Grab: Second leg should dip as low or lower than the first to grab stops
-                # Or at least be a clear double bottom
-                if recent['Low'].iloc[leg2_idx] <= (recent['Low'].iloc[leg1_idx] * 1.02):
-                    
-                    # 5. Volume Check: Volume on the downward sweep candles must be low/average (sellers exhausted)
-                    vol_leg1 = recent['Volume'].iloc[leg1_idx]
-                    avg_vol1 = recent['Vol_Avg'].iloc[leg1_idx]
-                    vol_leg2 = recent['Volume'].iloc[leg2_idx]
-                    avg_vol2 = recent['Vol_Avg'].iloc[leg2_idx]
-                    
-                    if vol_leg1 <= (avg_vol1 * 1.2) and vol_leg2 <= (avg_vol2 * 1.2):
-                        
-                        # 6. The Breakout Check: Current price breaking the Neckline with MASSIVE volume
-                        latest = recent.iloc[-1]
-                        is_green = latest['Close'] > latest['Open']
-                        
-                        # Price is breaking the W neckline OR recently broke it
-                        if latest['Close'] > neckline:
-                            # Breakout volume must be massive (> 1.5x average)
-                            if latest['Volume'] >= (latest['Vol_Avg'] * 1.5) and is_green:
-                                
-                                vol_multiplier = latest['Volume'] / latest['Vol_Avg']
-                                
-                                return {
-                                    "Ticker": ticker.replace('.NS', ''),
-                                    "Live Price": f"₹{round(latest['Close'], 2)}",
-                                    "200 EMA Sweep": "✅ W-Pattern Liquidity Grab",
-                                    "Base Volume": "🔇 Low (Sellers Exhausted)",
-                                    "Breakout Volume": f"🚀 Massive ({round(vol_multiplier, 1)}x Avg)",
-                                    "Action": "🔥 Neckline Broken (Bullish)"
-                                }
-                                
-        return None
     except Exception:
         return None
 
 # --- CLEAN SIDEBAR INTERFACE ---
 with st.sidebar:
-    st.header("1. Target Sector")
+    st.header("1. Target Sector/Universe")
     sector_input = st.selectbox("Market Universe:", [
         "NIFTY 500", 
         "NIFTY 50", 
         "NIFTY NEXT 50", 
+        "NIFTY BANK", 
         "NIFTY MIDCAP 100", 
         "NIFTY SMALLCAP 250"
     ])
     
     st.divider()
     st.header("2. Execution Timeframe")
-    tf_input = st.selectbox("Select Chart Horizon:", ["1D", "1W", "1 Hour", "15 Minutes", "1M"], index=0)
+    tf_input = st.selectbox("Select Chart Horizon:", ["15 Minutes", "1 Hour", "1D", "1W", "1M"], index=2)
     
     st.divider()
-    st.success("✅ **Active Setup**\n\n1. Double Sweep of 200 EMA (W Pattern)\n2. Closes Above 200 EMA\n3. Low Volume on the Drop\n4. Massive Volume on Green Breakout")
+    st.success("✅ **Active Setup**\n\n1. 21 EMA > 44 EMA\n2. Prior Expansion/Rally\n3. Retracement into 21-44 EMA Band\n4. Volume < 80% of Average (Low Vol)")
         
     st.divider()
-    execute_button = st.button("🚀 EXECUTE LIQUIDITY SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for 200 EMA Liquidity Sweeps on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for low-volume EMA pullbacks on the **{tf_input}** chart...")
     
-    # We require long periods to ensure the 200 EMA calculates correctly
     tf_configs = {
         "15 Minutes": {"period": "60d", "interval": "15m"},
         "1 Hour": {"period": "730d", "interval": "1h"},
-        "1D": {"period": "3y", "interval": "1d"},
-        "1W": {"period": "10y", "interval": "1wk"},
-        "1M": {"period": "25y", "interval": "1mo"}
+        "1D": {"period": "2y", "interval": "1d"},
+        "1W": {"period": "5y", "interval": "1wk"},
+        "1M": {"period": "10y", "interval": "1mo"}
     }
     active_cfg = tf_configs[tf_input]
     
@@ -162,7 +141,7 @@ if execute_button:
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
             executor.submit(
-                analyze_liquidity_sweep, ticker, active_cfg["period"], active_cfg["interval"]
+                analyze_ema_pullback, ticker, active_cfg["period"], active_cfg["interval"]
             ): ticker 
             for ticker in symbols_list
         }
@@ -175,17 +154,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Analyzing Institutional Sweeps: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Analyzing Low-Volume Retracements: {completed_count}/{len(symbols_list)}")
             
     progress_ui.empty()
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        # Sort by the most massive volume multipliers first
-        results_df['Raw_Vol'] = results_df['Breakout Volume'].str.extract(r'(\d+\.\d+)x').astype(float)
-        results_df = results_df.sort_values(by='Raw_Vol', ascending=False).drop(columns=['Raw_Vol'])
+        # Sort by the lowest volume percentage (driest volume at top)
+        results_df['Raw_Vol'] = results_df['Retracement Volume'].str.extract(r'(\d+\.\d+)%').astype(float)
+        results_df = results_df.sort_values(by='Raw_Vol', ascending=True).drop(columns=['Raw_Vol'])
         
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks executing a 200 EMA Liquidity Sweep with massive breakout volume.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks in a low-volume EMA accumulation pullback.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks matched. This setup is rare and highly explosive. It means no stocks are currently breaking the neckline of a 200 EMA W-pattern on massive volume in the {tf_input} timeframe today.")
+        st.warning(f"No stocks matched. This means no uptrending stocks are currently resting inside the 21/44 EMA band on low volume in the {tf_input} timeframe right now.")
