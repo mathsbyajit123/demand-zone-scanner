@@ -8,17 +8,17 @@ import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Custom MTF Accumulation Scanner", layout="wide", page_icon="⚙️")
+st.set_page_config(page_title="Golden Cross Pullback Scanner", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 34px; font-weight: 800; color: #8B5CF6; margin-bottom: 0px; }
+    .main-title { font-size: 34px; font-weight: 800; color: #3B82F6; margin-bottom: 0px; }
     .sub-title { font-size: 15px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">⚙️ Fully Customizable MTF Accumulation Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">You control the timeframes. Scans for Macro Uptrends + Micro Low-Volume Retracements.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">📈 Post-Cross 10%+ Expansion & Pullback Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Scans for stocks that crossed 21 EMA > 44 EMA, rallied 10%+, and are now pulling back into the EMA band on dry volume.</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -42,78 +42,83 @@ def load_symbols(category):
         st.sidebar.warning("⚠️ NSE Server blocked full list. Using liquid failsafe stocks.")
         return ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'ITC.NS', 'LT.NS', 'SBIN.NS', 'BHARTIARTL.NS']
 
-# --- CUSTOM MULTI-TIMEFRAME ALGORITHM ---
-def analyze_custom_mtf(ticker, macro_cfg, trigger_cfg):
+# --- POST-CROSS PULLBACK ALGORITHM ---
+def analyze_post_cross_pullback(ticker, period, interval):
     try:
         stock = yf.Ticker(ticker)
+        df = stock.history(period=period, interval=interval)
         
-        # --- 1. FETCH & ANALYZE MACRO TIMEFRAME ---
-        df_macro = stock.history(period=macro_cfg["period"], interval=macro_cfg["interval"])
-        if df_macro.empty or len(df_macro) < 50: return None
-        if df_macro.index.tz is not None: df_macro.index = df_macro.index.tz_localize(None)
-        df_macro = df_macro.ffill().dropna(subset=['Close'])
+        if df.empty or len(df) < 100: return None
+        if df.index.tz is not None: df.index = df.index.tz_localize(None)
+        df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
-        df_macro['EMA_21'] = df_macro['Close'].ewm(span=21, adjust=False).mean()
-        df_macro['EMA_44'] = df_macro['Close'].ewm(span=44, adjust=False).mean()
+        # Calculate EMAs and Volume Average
+        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
+        df['Vol_Avg'] = df['Volume'].rolling(20).mean()
         
-        macro_close = df_macro['Close'].iloc[-1]
-        macro_ema21 = df_macro['EMA_21'].iloc[-1]
-        macro_ema44 = df_macro['EMA_44'].iloc[-1]
+        latest_close = df['Close'].iloc[-1]
+        latest_low = df['Low'].iloc[-1]
+        ema21_live = df['EMA_21'].iloc[-1]
+        ema44_live = df['EMA_44'].iloc[-1]
+        vol_avg_live = df['Vol_Avg'].iloc[-1]
         
-        # MACRO RULES: Price > 21 EMA and 21 EMA > 44 EMA
-        if macro_close <= macro_ema21 or macro_ema21 <= macro_ema44:
-            return None
-
-        # --- 2. FETCH & ANALYZE TRIGGER (RETRACEMENT) TIMEFRAME ---
-        df_trig = stock.history(period=trigger_cfg["period"], interval=trigger_cfg["interval"])
-        if df_trig.empty or len(df_trig) < 50: return None
-        if df_trig.index.tz is not None: df_trig.index = df_trig.index.tz_localize(None)
-        df_trig = df_trig.ffill().dropna(subset=['Close', 'High', 'Low', 'Volume'])
-        
-        df_trig['EMA_21'] = df_trig['Close'].ewm(span=21, adjust=False).mean()
-        df_trig['EMA_44'] = df_trig['Close'].ewm(span=44, adjust=False).mean()
-        df_trig['Vol_Avg'] = df_trig['Volume'].rolling(20).mean()
-        
-        trig_close = df_trig['Close'].iloc[-1]
-        trig_low = df_trig['Low'].iloc[-1]
-        trig_ema21 = df_trig['EMA_21'].iloc[-1]
-        trig_ema44 = df_trig['EMA_44'].iloc[-1]
-        trig_vol_avg = df_trig['Vol_Avg'].iloc[-1]
-        
-        # TRIGGER RULE 1: Trend Alignment (21 > 44)
-        if trig_ema21 <= trig_ema44:
+        # 1. Current Trend Verification
+        if ema21_live <= ema44_live:
             return None
             
-        # TRIGGER RULE 2: Prior Move (Price must have expanded at least 2.5% above the 21 EMA recently)
-        recent_high_15 = df_trig['High'].iloc[-15:].max()
-        if recent_high_15 < (trig_ema21 * 1.025):
-            return None
+        # 2. Find the most recent Bullish Cross (21 crossing above 44)
+        df['Bull_Cross'] = (df['EMA_21'] > df['EMA_44']) & (df['EMA_21'].shift(1) <= df['EMA_44'].shift(1))
+        cross_indices = df[df['Bull_Cross']].index
+        
+        if len(cross_indices) == 0:
+            return None # No cross happened in the scanned period
             
-        # TRIGGER RULE 3: The Retracement (Low touches/breaks 21 EMA, Close holds above 44 EMA)
-        is_in_ema_zone = (trig_low <= (trig_ema21 * 1.005)) and (trig_close >= (trig_ema44 * 0.99))
+        last_cross_date = cross_indices[-1]
+        post_cross_df = df.loc[last_cross_date:]
+        
+        # 3. 10%+ Expansion Check
+        cross_price = df.loc[last_cross_date, 'Close']
+        max_high_since_cross = post_cross_df['High'].max()
+        
+        move_pct = ((max_high_since_cross - cross_price) / cross_price) * 100.0
+        
+        if move_pct < 10.0:
+            return None # The move wasn't strong enough (less than 10%)
+            
+        # 4. Retracement into the EMA Zone
+        # Low must be touching or dipping below the 21 EMA, while Close holds near/above the 44 EMA
+        is_in_ema_zone = (latest_low <= (ema21_live * 1.015)) and (latest_close >= (ema44_live * 0.985))
+        
         if not is_in_ema_zone:
             return None
             
-        # TRIGGER RULE 4: Volume Exhaustion (Average volume of last 3 bars < 75% of 20-bar Average)
-        pullback_vol = df_trig['Volume'].iloc[-3:].mean()
-        if pullback_vol >= (trig_vol_avg * 0.75):
+        # Ensure we are currently down from the recent peak (a true pullback)
+        if latest_close >= (max_high_since_cross * 0.95):
             return None
             
-        vol_dryness_pct = round((pullback_vol / trig_vol_avg) * 100, 1)
+        # 5. Volume Dry-Up (Accumulation Phase)
+        # Average volume of the last 3 days of the pullback must be < 75% of the 20-day average
+        pullback_vol = df['Volume'].iloc[-3:].mean()
+        
+        if pullback_vol >= (vol_avg_live * 0.75):
+            return None
+            
+        vol_dryness = round((pullback_vol / vol_avg_live) * 100, 1)
         
         return {
             "Ticker": ticker.replace('.NS', ''),
-            "Live Price": f"₹{round(trig_close, 2)}",
-            "Macro Trend": "✅ Aligned (Price > 21 > 44)",
-            "Micro Pullback": "🎯 In 21/44 EMA Zone",
-            "Retracement Volume": f"🔇 {vol_dryness_pct}% of Avg (Dry)",
-            "Status": "🚀 Ready for Reversal"
+            "Live Price": f"₹{round(latest_close, 2)}",
+            "Post-Cross Move": f"🚀 +{round(move_pct, 1)}% Rally",
+            "EMA Zone Status": "🎯 Retesting 21/44 Band",
+            "Pullback Volume": f"🔇 {vol_dryness}% of Avg (Dry)",
+            "Action": "🔔 Ready for Reversal"
         }
                 
     except Exception:
         return None
 
-# --- SIDEBAR INTERFACE: TOTAL USER CONTROL ---
+# --- SIDEBAR INTERFACE ---
 with st.sidebar:
     st.header("1. Target Sector")
     sector_input = st.selectbox("Market Universe:", [
@@ -122,49 +127,38 @@ with st.sidebar:
     ])
     
     st.divider()
-    st.header("2. Setup Your Timeframes")
+    st.header("2. Execution Timeframe")
     
-    macro_tf = st.selectbox(
-        "Macro Trend (The Big Picture):", 
-        ["1 Month", "1 Week", "1 Day", "1 Hour"], 
-        index=1,
-        help="Checks if the higher timeframe is in a strong uptrend."
-    )
-    
-    trigger_tf = st.selectbox(
-        "Retracement Trigger (The Pullback):", 
-        ["1 Week", "1 Day", "1 Hour", "15 Minutes"], 
-        index=1,
-        help="Checks where the actual low-volume accumulation is happening."
+    tf_input = st.selectbox(
+        "Scanning Timeframe:", 
+        ["1 Day", "1 Week", "1 Hour", "15 Minutes"], 
+        index=0,
+        help="Select the chart horizon to hunt for the EMA Cross, Rally, and Pullback."
     )
     
     st.divider()
-    st.success(f"**Scanner Will Look For:**\n\n1. Uptrend on **{macro_tf}** chart.\n2. Low Volume Pullback on **{trigger_tf}** chart.")
-    execute_button = st.button("🚀 EXECUTE CUSTOM SCAN", type="primary", use_container_width=True)
+    st.success(f"**Engine Active**\n\n1. 21 crosses above 44 EMA\n2. Price rallies > 10%\n3. Pulls back into 21/44 band\n4. Volume < 75% of Average")
+    execute_button = st.button("🚀 EXECUTE SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
-    # Mapping user selections to yfinance API parameters
     tf_configs = {
-        "1 Month": {"period": "20y", "interval": "1mo"},
-        "1 Week": {"period": "10y", "interval": "1wk"},
+        "1 Week": {"period": "5y", "interval": "1wk"},
         "1 Day": {"period": "2y", "interval": "1d"},
         "1 Hour": {"period": "729d", "interval": "1h"},
         "15 Minutes": {"period": "59d", "interval": "15m"}
     }
-    
-    macro_cfg = tf_configs[macro_tf]
-    trigger_cfg = tf_configs[trigger_tf]
+    active_cfg = tf_configs[tf_input]
 
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for {macro_tf} Trend + {trigger_tf} Retracement...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for 10%+ Post-Cross Expansion and Dry Pullbacks on the **{tf_input}** chart...")
     
     confirmed_setups = []
     progress_ui = st.progress(0, text="Igniting engine...")
     
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
-            executor.submit(analyze_custom_mtf, ticker, macro_cfg, trigger_cfg): ticker 
+            executor.submit(analyze_post_cross_pullback, ticker, active_cfg["period"], active_cfg["interval"]): ticker 
             for ticker in symbols_list
         }
         
@@ -176,16 +170,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Analyzing Custom Timeframes: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Analyzing Crosses & Pullbacks: {completed_count}/{len(symbols_list)}")
             
     progress_ui.empty()
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        results_df['Raw_Vol'] = results_df['Retracement Volume'].str.extract(r'(\d+\.\d+)%').astype(float)
-        results_df = results_df.sort_values(by='Raw_Vol', ascending=True).drop(columns=['Raw_Vol'])
+        # Sort by the largest Post-Cross Move first
+        results_df['Raw_Move'] = results_df['Post-Cross Move'].str.extract(r'\+(\d+\.\d+)%').astype(float)
+        results_df = results_df.sort_values(by='Raw_Move', ascending=False).drop(columns=['Raw_Move'])
         
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks matching your exact timeframe combinations.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks successfully executing the Post-Cross Accumulation strategy.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks currently match all conditions. This means no {macro_tf} uptrending stocks are currently experiencing a low-volume {trigger_tf} pullback.")
+        st.warning(f"No stocks currently match. This means no {tf_input} stocks have recently completed a 10%+ rally following a 21/44 EMA cross AND are currently pulling back on dry volume.")
