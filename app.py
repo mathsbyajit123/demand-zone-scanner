@@ -8,17 +8,17 @@ import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Immediate First-Touch EMA Engine", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="Expanded Wick-Capture Engine", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 34px; font-weight: 800; color: #10B981; margin-bottom: 0px; }
+    .main-title { font-size: 34px; font-weight: 800; color: #3B82F6; margin-bottom: 0px; }
     .sub-title { font-size: 15px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🎯 Immediate 1st-Leg Retest Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans ONLY for fresh initial crossovers, modest 8%-25% 1st-leg moves, and the VERY FIRST wick entry into the EMA zone.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 Expanded Wick-Capture & Pullback Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Scans for trend-intact pullbacks. Catches wicks entering the 21/44 zone on dry volume without being overly strict on prior minor touches.</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -42,13 +42,13 @@ def load_symbols(category):
         st.sidebar.warning("⚠️ NSE Server blocked full list. Using liquid failsafe stocks.")
         return ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'ITC.NS', 'LT.NS', 'SBIN.NS', 'BHARTIARTL.NS']
 
-# --- IMMEDIATE FIRST-TOUCH ALGORITHM ---
-def analyze_immediate_first_touch(ticker, period, interval, fast_ema_val, slow_ema_val, min_rally_pct, max_rally_pct, max_vol_pct):
+# --- EXPANDED WICK-CAPTURE ALGORITHM ---
+def analyze_expanded_pullback(ticker, period, interval, fast_ema_val, slow_ema_val, min_rally_pct, max_rally_pct, max_vol_pct, zone_buffer):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
-        if df.empty or len(df) < 100: return None
+        if df.empty or len(df) < 120: return None
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
@@ -63,7 +63,7 @@ def analyze_immediate_first_touch(ticker, period, interval, fast_ema_val, slow_e
         ema_slow_live = df['EMA_Slow'].iloc[-1]
         vol_avg_live = df['Vol_Avg'].iloc[-1]
         
-        # Must currently be in an uptrend (Fast EMA > Slow EMA)
+        # Must currently be in an uptrend
         if ema_fast_live <= ema_slow_live:
             return None
             
@@ -79,33 +79,41 @@ def analyze_immediate_first_touch(ticker, period, interval, fast_ema_val, slow_e
         curr_pos = len(df) - 1
         
         bars_since_cross = curr_pos - cross_pos
-        # Must be a recent cross (within last 45 bars)
-        if bars_since_cross > 45 or bars_since_cross < 3:
+        
+        # Expanded to 90 bars to catch slower, high-quality setups
+        if bars_since_cross > 90 or bars_since_cross < 3:
             return None
             
         post_cross_df = df.iloc[cross_pos : curr_pos + 1]
         cross_price = df.iloc[cross_pos]['Close']
         max_high = post_cross_df['High'].max()
         
-        # 3. RALLY CAP FILTER (Rejects over-extended 50%+ moves)
+        # 3. RALLY FILTER
         rally_pct = ((max_high - cross_price) / cross_price) * 100.0
-        
         if rally_pct < min_rally_pct or rally_pct > max_rally_pct:
             return None
             
-        # 4. ABSOLUTE ZERO-TOUCH SHIELD
-        # Check every single bar from the Crossover to 2 bars ago
+        # 4. TREND INTACT SHIELD (Replaces the hyper-strict Zero-Touch rule)
+        # We only reject the stock if it CLOSED below the 44 EMA during the run-up
         middle_df = df.iloc[cross_pos + 1 : curr_pos - 1]
         if not middle_df.empty:
-            # If low ever dipped into or below Fast EMA, REJECT!
-            has_prior_touch = (middle_df['Low'] <= (middle_df['EMA_Fast'] * 1.008)).any()
-            if has_prior_touch:
-                return None  # Touched previously, not fresh!
+            trend_broken = (middle_df['Close'] < (middle_df['EMA_Slow'] * 0.99)).any()
+            if trend_broken:
+                return None # The uptrend failed previously
                 
-        # 5. CURRENT WICK / ENTRY TEST
-        # Low wicks into/below Fast EMA, while Close holds above/near Slow EMA
-        is_touching_now = (latest_low <= (ema_fast_live * 1.01)) and (latest_close >= (ema_slow_live * 0.985))
-        if not is_touching_now:
+        # 5. CURRENT ENTRY TEST (Wick + Body Logic)
+        buffer_multiplier = 1 + (zone_buffer / 100.0)
+        
+        # Wick must dip into or get very close to the Fast EMA (based on your buffer slider)
+        reached_fast_ema = latest_low <= (ema_fast_live * buffer_multiplier)
+        
+        # Body (Close) must hold at or above the Slow EMA (with a tiny 1% allowance for closing right on the line)
+        held_slow_ema = latest_close >= (ema_slow_live * 0.99)
+        
+        # Ensure it's actually a pullback (Close isn't flying 5% above the 21 EMA right now)
+        is_pullback = latest_close <= (ema_fast_live * 1.03)
+
+        if not (reached_fast_ema and held_slow_ema and is_pullback):
             return None
             
         # 6. VOLUME DRY-UP FILTER
@@ -118,10 +126,10 @@ def analyze_immediate_first_touch(ticker, period, interval, fast_ema_val, slow_e
         return {
             "Ticker": ticker.replace('.NS', ''),
             "Live Price": f"₹{round(latest_close, 2)}",
-            "1st-Leg Move": f"📈 +{round(rally_pct, 1)}% (Cap: {max_rally_pct}%)",
-            "Freshness": "🌟 100% FRESH (0 Prior Touches)",
-            "Retracement Volume": f"🔇 {round(vol_ratio, 1)}% of Avg Vol",
-            "Action": "🔥 Immediate 1st-Touch Entry Zone"
+            "Initial Move": f"📈 +{round(rally_pct, 1)}% Rally",
+            "Zone Entry": "🎯 Valid Wick in EMA Zone",
+            "Retracement Volume": f"🔇 {round(vol_ratio, 1)}% (Dry)",
+            "Action": "🔥 Ready for Reversal"
         }
                 
     except Exception:
@@ -133,30 +141,31 @@ with st.sidebar:
     sector_input = st.selectbox("Market Universe:", [
         "NIFTY 500", "NIFTY 50", "NIFTY NEXT 50", 
         "NIFTY BANK", "NIFTY MIDCAP 100", "NIFTY SMALLCAP 250"
-    ])
+    ], index=0)
     
     st.divider()
     st.header("2. Execution Timeframe")
     tf_input = st.selectbox("Scanning Timeframe:", ["1 Day", "1 Week", "1 Hour", "15 Minutes"], index=0)
     
     st.divider()
-    st.header("3. EMA & Rally Limits")
+    st.header("3. Momentum Parameters")
     col1, col2 = st.columns(2)
     with col1:
-        fast_ema = st.number_input("Fast EMA", min_value=5, max_value=100, value=21)
+        fast_ema = st.number_input("Fast EMA", value=21)
     with col2:
-        slow_ema = st.number_input("Slow EMA", min_value=10, max_value=200, value=44)
+        slow_ema = st.number_input("Slow EMA", value=44)
         
-    min_rally = st.slider("Min 1st-Leg Rally (%)", 5.0, 20.0, 8.0, step=1.0)
-    max_rally = st.slider("Max 1st-Leg Rally (%)", 15.0, 50.0, 25.0, step=1.0, 
-                          help="Cap the rally at 25% to reject over-extended stocks like Honasa.")
+    min_rally = st.slider("Min 1st-Leg Rally (%)", 2.0, 20.0, 5.0, step=1.0)
+    max_rally = st.slider("Max 1st-Leg Rally (%)", 15.0, 70.0, 40.0, step=1.0)
     
     st.divider()
-    st.header("4. Accumulation Parameters")
-    max_volume = st.slider("Max Retracement Volume (%)", 20.0, 100.0, 75.0, step=5.0)
+    st.header("4. Entry Parameters")
+    zone_buffer = st.slider("Wick Proximity Buffer (%)", 0.0, 3.0, 1.5, step=0.5, 
+                            help="How close the wick needs to get to the 21 EMA to trigger. Higher % catches more stocks.")
+    max_volume = st.slider("Max Retracement Volume (%)", 30.0, 120.0, 85.0, step=5.0)
     
     st.divider()
-    execute_button = st.button("🚀 EXECUTE FRESH SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE EXPANDED SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
@@ -169,7 +178,7 @@ if execute_button:
     active_cfg = tf_configs[tf_input]
 
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for **Immediate 1st Retests** on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for valid wick entries on the **{tf_input}** chart...")
     
     confirmed_setups = []
     progress_ui = st.progress(0, text="Igniting engine...")
@@ -177,7 +186,7 @@ if execute_button:
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
             executor.submit(
-                analyze_immediate_first_touch, 
+                analyze_expanded_pullback, 
                 ticker, 
                 active_cfg["period"], 
                 active_cfg["interval"],
@@ -185,7 +194,8 @@ if execute_button:
                 slow_ema,
                 min_rally,
                 max_rally,
-                max_volume
+                max_volume,
+                zone_buffer
             ): ticker 
             for ticker in symbols_list
         }
@@ -198,16 +208,16 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Checking Post-Cross History: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Hunting setups: {completed_count}/{len(symbols_list)}")
             
     progress_ui.empty()
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        results_df['Raw_Rally'] = results_df['1st-Leg Move'].str.extract(r'\+(\d+\.\d+)%').astype(float)
-        results_df = results_df.sort_values(by='Raw_Rally', ascending=True).drop(columns=['Raw_Rally'])
+        results_df['Raw_Vol'] = results_df['Retracement Volume'].str.extract(r'🔇 (\d+\.\d+)%').astype(float)
+        results_df = results_df.sort_values(by='Raw_Vol', ascending=True).drop(columns=['Raw_Vol'])
         
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks making their IMMEDIATE 1st touch after a 1st-leg expansion.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks actively pulling back into your EMA zone.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks currently match. Capping the rally at {max_rally}% and requiring ZERO prior touches produces an exclusive institutional filter.")
+        st.warning("No stocks matched. Try increasing the 'Wick Proximity Buffer' or 'Max Retracement Volume' to widen the net further.")
