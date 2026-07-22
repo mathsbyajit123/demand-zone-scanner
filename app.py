@@ -8,17 +8,17 @@ import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="Custom Crossover & Pullback Engine", layout="wide", page_icon="🎛️")
+st.set_page_config(page_title="Fresh First-Touch EMA Scanner", layout="wide", page_icon="🎯")
 
 st.markdown("""
     <style>
-    .main-title { font-size: 34px; font-weight: 800; color: #3B82F6; margin-bottom: 0px; }
+    .main-title { font-size: 34px; font-weight: 800; color: #10B981; margin-bottom: 0px; }
     .sub-title { font-size: 15px; color: #475569; margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🎛️ Fully Customizable Crossover & Pullback Engine</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">You control the EMAs, the minimum rally, the volume dryness, and the timeframe.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">🎯 Fresh First-Touch Crossover Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Strictly filters for the VERY FIRST retest after a 21/44 EMA cross & rally. Rejects 2nd, 3rd, or 4th touches.</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -42,17 +42,17 @@ def load_symbols(category):
         st.sidebar.warning("⚠️ NSE Server blocked full list. Using liquid failsafe stocks.")
         return ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'ITC.NS', 'LT.NS', 'SBIN.NS', 'BHARTIARTL.NS']
 
-# --- CUSTOMIZABLE ALGORITHM ---
-def analyze_custom_pullback(ticker, period, interval, fast_ema_val, slow_ema_val, min_rally_pct, max_vol_pct):
+# --- FRESH FIRST-TOUCH ALGORITHM ---
+def analyze_fresh_first_touch(ticker, period, interval, fast_ema_val, slow_ema_val, min_rally_pct, max_vol_pct):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
-        if df.empty or len(df) < 150: return None
+        if df.empty or len(df) < 120: return None
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
-        # 1. Apply User's Custom EMAs
+        # 1. Calculate EMAs and Volume Base
         df['EMA_Fast'] = df['Close'].ewm(span=fast_ema_val, adjust=False).mean()
         df['EMA_Slow'] = df['Close'].ewm(span=slow_ema_val, adjust=False).mean()
         df['Vol_Avg'] = df['Volume'].rolling(20).mean()
@@ -63,40 +63,60 @@ def analyze_custom_pullback(ticker, period, interval, fast_ema_val, slow_ema_val
         ema_slow_live = df['EMA_Slow'].iloc[-1]
         vol_avg_live = df['Vol_Avg'].iloc[-1]
         
-        # 2. Verify current uptrend
+        # Current trend check: Fast EMA must be above Slow EMA
         if ema_fast_live <= ema_slow_live:
             return None
             
-        # 3. Find the most recent User-Defined Crossover
+        # 2. Find the most recent Crossover
         df['Bull_Cross'] = (df['EMA_Fast'] > df['EMA_Slow']) & (df['EMA_Fast'].shift(1) <= df['EMA_Slow'].shift(1))
         
-        # Look back over the last 100 bars for the crossover
-        recent_crosses = df['Bull_Cross'].iloc[-100:]
-        if not recent_crosses.any():
+        recent_crosses = df[df['Bull_Cross']]
+        if recent_crosses.empty:
             return None 
             
-        last_cross_idx = recent_crosses[recent_crosses == True].index[-1]
-        post_cross_df = df.loc[last_cross_idx:]
+        last_cross_idx = recent_crosses.index[-1]
+        cross_pos = df.index.get_loc(last_cross_idx)
         
-        # 4. Check the Custom Rally Percentage
-        cross_price = df.loc[last_cross_idx, 'Close']
+        # Ensure crossover happened within recent history (last 80 bars max)
+        if (len(df) - cross_pos) > 80:
+            return None
+            
+        post_cross_df = df.iloc[cross_pos:]
+        
+        # 3. Check Rally Strength (Must move at least min_rally_pct post-cross)
+        cross_price = df.iloc[cross_pos]['Close']
         max_high = post_cross_df['High'].max()
-        move_pct = ((max_high - cross_price) / cross_price) * 100.0
+        rally_pct = ((max_high - cross_price) / cross_price) * 100.0
         
-        if move_pct < min_rally_pct:
+        if rally_pct < min_rally_pct:
             return None
             
-        # 5. Check if it dropped from the high
-        if latest_close >= (max_high * 0.95):
-            return None
+        # Locate exact position of the rally peak
+        peak_pos_in_post = post_cross_df['High'].values.argmax()
+        peak_pos = cross_pos + peak_pos_in_post
+        
+        curr_pos = len(df) - 1
+        
+        # 4. STRICT FIRST-TOUCH FILTER (Eliminates 2nd, 3rd, 4th touches)
+        # Check every single bar between the rally PEAK and 3 bars ago
+        if peak_pos < (curr_pos - 3):
+            intermediate_df = df.iloc[peak_pos : curr_pos - 3]
             
-        # 6. Check if it dropped into the Custom EMA Zone
-        # Allowing a 1.5% buffer zone around the selected EMAs
+            # If the price touched or dipped into the Fast EMA during this middle period, REJECT IT!
+            prior_touch = (intermediate_df['Low'] <= (intermediate_df['EMA_Fast'] * 1.005)).any()
+            if prior_touch:
+                return None  # This was already retested before today. Not a fresh first touch!
+                
+        # 5. Verify the price is currently at the EMA zone (The First Touch happening NOW)
         is_in_ema_zone = (latest_low <= (ema_fast_live * 1.015)) and (latest_close >= (ema_slow_live * 0.985))
         if not is_in_ema_zone:
             return None
             
-        # 7. Check Custom Volume Dry-Up limit
+        # Ensure it has pulled back from the high
+        if latest_close >= (max_high * 0.96):
+            return None
+            
+        # 6. Volume Dry-Up Verification
         recent_pullback_vol = df['Volume'].iloc[-3:].mean()
         vol_ratio = (recent_pullback_vol / vol_avg_live) * 100.0
         
@@ -106,16 +126,16 @@ def analyze_custom_pullback(ticker, period, interval, fast_ema_val, slow_ema_val
         return {
             "Ticker": ticker.replace('.NS', ''),
             "Live Price": f"₹{round(latest_close, 2)}",
-            "Initial Rally": f"📈 +{round(move_pct, 1)}% (Target: {min_rally_pct}%)",
-            "EMA Status": f"🎯 Retesting {fast_ema_val}/{slow_ema_val} Zone",
-            "Retracement Volume": f"🔇 {round(vol_ratio, 1)}% (Target: <{max_vol_pct}%)",
-            "Action": "🔔 Ready for Reversal Setup"
+            "Initial Rally": f"📈 +{round(rally_pct, 1)}% Post-Cross",
+            "Touch Status": "🌟 FRESH 1ST RETEST (0 Prior Touches)",
+            "Retracement Volume": f"🔇 {round(vol_ratio, 1)}% of Avg Vol",
+            "Action": "🔥 Fresh Institutional Entry"
         }
                 
     except Exception:
         return None
 
-# --- FULLY INTERACTIVE SIDEBAR ---
+# --- INTERACTIVE SIDEBAR ---
 with st.sidebar:
     st.header("1. Target Universe")
     sector_input = st.selectbox("Market Universe:", [
@@ -129,7 +149,7 @@ with st.sidebar:
         "Scanning Timeframe:", 
         ["1 Day", "1 Week", "1 Hour", "15 Minutes"], 
         index=0,
-        help="Select the specific chart horizon."
+        help="Select chart horizon."
     )
     
     st.divider()
@@ -142,11 +162,11 @@ with st.sidebar:
         
     min_rally = st.slider(
         "Minimum Post-Cross Rally (%)", 
-        min_value=1.0, 
+        min_value=5.0, 
         max_value=30.0, 
         value=10.0, 
         step=1.0, 
-        help="How much the stock must have exploded upward after crossing the EMAs."
+        help="Filters out weak crosses. Forces stock to rally at least this much before pulling back."
     )
     
     st.divider()
@@ -154,14 +174,14 @@ with st.sidebar:
     max_volume = st.slider(
         "Max Retracement Volume (%)", 
         min_value=10.0, 
-        max_value=150.0, 
+        max_value=120.0, 
         value=75.0, 
         step=5.0, 
-        help="Volume limit during the pullback. Lower = stronger institutional holding."
+        help="Limits pullback volume to ensure sellers are exhausted."
     )
     
     st.divider()
-    execute_button = st.button("🚀 EXECUTE CUSTOM SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 SCAN FOR FRESH FIRST-TOUCH", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
@@ -174,7 +194,7 @@ if execute_button:
     active_cfg = tf_configs[tf_input]
 
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** using your exact parameters on the **{tf_input}** chart...")
+    st.info(f"Scanning **{len(symbols_list)} stocks** for **Fresh 1st Retests** on the **{tf_input}** chart...")
     
     confirmed_setups = []
     progress_ui = st.progress(0, text="Igniting engine...")
@@ -182,7 +202,7 @@ if execute_button:
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
             executor.submit(
-                analyze_custom_pullback, 
+                analyze_fresh_first_touch, 
                 ticker, 
                 active_cfg["period"], 
                 active_cfg["interval"],
@@ -202,17 +222,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Analyzing Custom Rules: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Filtering Out Old Touches: {completed_count}/{len(symbols_list)}")
             
     progress_ui.empty()
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        # Sort by driest volume first
-        results_df['Raw_Vol'] = results_df['Retracement Volume'].str.extract(r'🔇 (\d+\.\d+)%').astype(float)
-        results_df = results_df.sort_values(by='Raw_Vol', ascending=True).drop(columns=['Raw_Vol'])
+        # Sort by largest rally first
+        results_df['Raw_Rally'] = results_df['Initial Rally'].str.extract(r'\+(\d+\.\d+)%').astype(float)
+        results_df = results_df.sort_values(by='Raw_Rally', ascending=False).drop(columns=['Raw_Rally'])
         
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks matching your exact custom parameters.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks making their VERY FIRST retest after a crossover & rally.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks currently match your exact rules. Try lowering the 'Minimum Post-Cross Rally (%)' or raising the 'Max Retracement Volume (%)' in the sidebar.")
+        st.warning(f"No stocks currently match. Requiring a fresh 1st touch after a >{min_rally}% rally is an extremely strict institutional filter. If results are zero, try lowering 'Minimum Post-Cross Rally (%)' to 7.0% or 8.0%.")
