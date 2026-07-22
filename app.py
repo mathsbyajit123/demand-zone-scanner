@@ -8,7 +8,7 @@ import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="21/44 EMA Low-Vol Pullback Scanner", layout="wide", page_icon="🪃")
+st.set_page_config(page_title="MTF Weekly + Daily EMA Accumulation Scanner", layout="wide", page_icon="⚡")
 
 st.markdown("""
     <style>
@@ -17,8 +17,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="main-title">🪃 21/44 EMA Low-Volume Accumulation Scanner</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Scans for stocks in strong uptrends (21 > 44 EMA) pulling back to the 21/44 EMA zone on extremely low volume.</p>', unsafe_allow_html=True)
+st.markdown('<p class="main-title">⚡ Multi-Timeframe (Weekly + Daily) Accumulation Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Weekly Alignment: Price > 21 WEMA > 44 WEMA | Daily Trigger: Low-Volume Retracement into 21/44 EMA Band</p>', unsafe_allow_html=True)
 
 # --- ROBUST DATA UNIVERSE LOADER ---
 @st.cache_data(ttl=86400)
@@ -42,58 +42,85 @@ def load_symbols(category):
         st.sidebar.warning("⚠️ NSE Server blocked full list. Using liquid failsafe stocks.")
         return ['RELIANCE.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'TCS.NS', 'ITC.NS', 'LT.NS', 'SBIN.NS', 'BHARTIARTL.NS']
 
-# --- LOW VOLUME RETRACEMENT ALGORITHM ---
-def analyze_ema_pullback(ticker, period, interval):
+# --- MULTI-TIMEFRAME ANALYSIS ALGORITHM ---
+def analyze_mtf_accumulation(ticker):
     try:
         stock = yf.Ticker(ticker)
-        df = stock.history(period=period, interval=interval)
+        # Fetch 2 years of daily data to generate both daily and weekly EMAs
+        df = stock.history(period="2y", interval="1d")
         
-        if df.empty or len(df) < 60: return None
+        if df.empty or len(df) < 150: return None
         if df.index.tz is not None: df.index = df.index.tz_localize(None)
         df = df.ffill().dropna(subset=['Close', 'Open', 'High', 'Low', 'Volume'])
         
-        # Calculate 21 and 44 EMAs + 20-period Volume Average
-        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
-        df['Vol_Avg'] = df['Volume'].rolling(20).mean()
+        # ==========================================
+        # 1. WEEKLY TIMEFRAME CONFLUENCE (MACRO FILTER)
+        # ==========================================
+        df_weekly = df.resample('W-FRI').agg({
+            'Open': 'first',
+            'High': 'max',
+            'Low': 'min',
+            'Close': 'last',
+            'Volume': 'sum'
+        }).dropna()
         
-        latest_close = df['Close'].iloc[-1]
-        latest_low = df['Low'].iloc[-1]
-        ema21_live = df['EMA_21'].iloc[-1]
-        ema44_live = df['EMA_44'].iloc[-1]
-        vol_avg_live = df['Vol_Avg'].iloc[-1]
+        df_weekly['W_EMA_21'] = df_weekly['Close'].ewm(span=21, adjust=False).mean()
+        df_weekly['W_EMA_44'] = df_weekly['Close'].ewm(span=44, adjust=False).mean()
         
-        # Rule 1: Uptrend Filter (21 EMA must be strictly above 44 EMA)
-        if ema21_live <= ema44_live:
+        latest_w_close = df_weekly['Close'].iloc[-1]
+        latest_w_ema21 = df_weekly['W_EMA_21'].iloc[-1]
+        latest_w_ema44 = df_weekly['W_EMA_44'].iloc[-1]
+        
+        # Rule W1: Weekly Price > 21 WEMA
+        if latest_w_close <= latest_w_ema21:
             return None
             
-        # Rule 2: Prior Expansion Check (Must have had a move/rally above 21 EMA in the last 15 candles)
+        # Rule W2: 21 WEMA > 44 WEMA (Macro Bullish Structure)
+        if latest_w_ema21 <= latest_w_ema44:
+            return None
+
+        # ==========================================
+        # 2. DAILY TIMEFRAME RETRACEMENT (TRIGGER)
+        # ==========================================
+        df['D_EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+        df['D_EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
+        df['Vol_Avg_20'] = df['Volume'].rolling(20).mean()
+        
+        d_close = df['Close'].iloc[-1]
+        d_low = df['Low'].iloc[-1]
+        d_ema21 = df['D_EMA_21'].iloc[-1]
+        d_ema44 = df['D_EMA_44'].iloc[-1]
+        d_vol_avg = df['Vol_Avg_20'].iloc[-1]
+        
+        # Rule D1: Daily 21 EMA > 44 EMA
+        if d_ema21 <= d_ema44:
+            return None
+            
+        # Rule D2: Prior Move / Rally (Price reached at least 2.5% above 21 Daily EMA in last 15 days)
         recent_high_15 = df['High'].iloc[-15:].max()
-        if recent_high_15 < (ema21_live * 1.025): # At least 2.5% move above the 21 EMA
+        if recent_high_15 < (d_ema21 * 1.025):
             return None
             
-        # Rule 3: Retracement Condition (Price pulled back to or inside the 21 EMA - 44 EMA band)
-        # Low is touching/below 21 EMA, but Close is holding above or near 44 EMA
-        is_pullback_zone = (latest_low <= (ema21_live * 1.005)) and (latest_close >= (ema44_live * 0.99))
-        if not is_pullback_zone:
+        # Rule D3: Retracement to Daily EMA zone
+        # Daily Low is touching/below 21 EMA, but Close holds above/near 44 EMA
+        is_in_ema_zone = (d_low <= (d_ema21 * 1.005)) and (d_close >= (d_ema44 * 0.99))
+        if not is_in_ema_zone:
             return None
             
-        # Rule 4: Volume Dry-Up (Average volume over the last 3 pullback bars is noticeably lower than 20-period Avg)
-        pullback_vol_avg = df['Volume'].iloc[-3:].mean()
-        
-        # Pullback volume must be < 80% of the 20-period average volume
-        if pullback_vol_avg >= (vol_avg_live * 0.80):
+        # Rule D4: DRY VOLUME (Average volume over last 3 pullback days < 75% of 20-day Average)
+        pullback_vol_3d = df['Volume'].iloc[-3:].mean()
+        if pullback_vol_3d >= (d_vol_avg * 0.75):
             return None
             
-        vol_dryup_pct = round((pullback_vol_avg / vol_avg_live) * 100, 1)
+        vol_dryness_pct = round((pullback_vol_3d / d_vol_avg) * 100, 1)
         
         return {
             "Ticker": ticker.replace('.NS', ''),
-            "Live Price": f"₹{round(latest_close, 2)}",
-            "EMA Trend": "✅ 21 EMA > 44 EMA",
-            "Zone Status": "🎯 Testing 21/44 EMA Band",
-            "Retracement Volume": f"🔇 {vol_dryup_pct}% of Avg Vol (Dry)",
-            "Action": "🟢 Watch for Reversal Candle"
+            "Live Price": f"₹{round(d_close, 2)}",
+            "Weekly Macro": "✅ W-Close > 21 WEMA > 44 WEMA",
+            "Daily Setup": "🎯 Testing Daily 21/44 EMA Band",
+            "Retracement Volume": f"🔇 {vol_dryness_pct}% of Avg Vol (Dry)",
+            "Action": "🔥 High-Probability Reversal Zone"
         }
                 
     except Exception:
@@ -112,37 +139,22 @@ with st.sidebar:
     ])
     
     st.divider()
-    st.header("2. Execution Timeframe")
-    tf_input = st.selectbox("Select Chart Horizon:", ["15 Minutes", "1 Hour", "1D", "1W", "1M"], index=2)
-    
-    st.divider()
-    st.success("✅ **Active Setup**\n\n1. 21 EMA > 44 EMA\n2. Prior Expansion/Rally\n3. Retracement into 21-44 EMA Band\n4. Volume < 80% of Average (Low Vol)")
+    st.success("✅ **MTF Confluence Rules**\n\n1. **Weekly:** Close > 21 WEMA > 44 WEMA\n2. **Daily:** 21 EMA > 44 EMA\n3. **Daily:** Retracement to 21/44 EMA\n4. **Volume:** < 75% of 20-day Average")
         
     st.divider()
-    execute_button = st.button("🚀 EXECUTE SCAN", type="primary", use_container_width=True)
+    execute_button = st.button("🚀 EXECUTE MTF SCAN", type="primary", use_container_width=True)
 
 # --- EXECUTION ENGINE ---
 if execute_button:
     symbols_list = load_symbols(sector_input)
-    st.info(f"Scanning **{len(symbols_list)} stocks** for low-volume EMA pullbacks on the **{tf_input}** chart...")
-    
-    tf_configs = {
-        "15 Minutes": {"period": "60d", "interval": "15m"},
-        "1 Hour": {"period": "730d", "interval": "1h"},
-        "1D": {"period": "2y", "interval": "1d"},
-        "1W": {"period": "5y", "interval": "1wk"},
-        "1M": {"period": "10y", "interval": "1mo"}
-    }
-    active_cfg = tf_configs[tf_input]
+    st.info(f"Scanning **{len(symbols_list)} stocks** for Multi-Timeframe Accumulation Setups...")
     
     confirmed_setups = []
     progress_ui = st.progress(0, text="Igniting engine...")
     
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures_map = {
-            executor.submit(
-                analyze_ema_pullback, ticker, active_cfg["period"], active_cfg["interval"]
-            ): ticker 
+            executor.submit(analyze_mtf_accumulation, ticker): ticker 
             for ticker in symbols_list
         }
         
@@ -154,17 +166,17 @@ if execute_button:
                 confirmed_setups.append(result)
             
             percent_complete = completed_count / len(symbols_list)
-            progress_ui.progress(percent_complete, text=f"Analyzing Low-Volume Retracements: {completed_count}/{len(symbols_list)}")
+            progress_ui.progress(percent_complete, text=f"Analyzing MTF Alignment: {completed_count}/{len(symbols_list)}")
             
     progress_ui.empty()
     
     if confirmed_setups:
         results_df = pd.DataFrame(confirmed_setups)
-        # Sort by the lowest volume percentage (driest volume at top)
+        # Sort by driest volume first
         results_df['Raw_Vol'] = results_df['Retracement Volume'].str.extract(r'(\d+\.\d+)%').astype(float)
         results_df = results_df.sort_values(by='Raw_Vol', ascending=True).drop(columns=['Raw_Vol'])
         
-        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks in a low-volume EMA accumulation pullback.")
+        st.success(f"🎯 Complete: Found **{len(results_df)}** stocks aligned on Weekly macro trend & Daily low-volume pullback.")
         st.dataframe(results_df, use_container_width=True, hide_index=True)
     else:
-        st.warning(f"No stocks matched. This means no uptrending stocks are currently resting inside the 21/44 EMA band on low volume in the {tf_input} timeframe right now.")
+        st.warning("No stocks currently match all conditions. This means no Weekly uptrending stocks are undergoing a dry-volume Daily pullback right now.")
