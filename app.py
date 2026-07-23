@@ -1,25 +1,33 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import warnings
-import sys
 
 warnings.filterwarnings('ignore')
+
+# --- STREAMLIT UI SETUP ---
+st.set_page_config(page_title="Live Market Scanner", layout="wide")
+st.title("🚀 Market Structure Scanner")
+st.markdown("---")
 
 TICKERS = [
     "REDINGTON.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", 
     "INFY.NS", "TATASTEEL.NS", "SBIN.NS", "AAPL", "MSFT"
 ]
-TIMEFRAME = "1d" 
-IGNORE_LIVE_CANDLE = True 
+TIMEFRAME = "1d"
 
 def calculate_indicators(df):
     df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['Vol_SMA_20'] = df['Volume'].rolling(window=20).mean()
-    return df.dropna()
+    return df
 
 def check_setup(ticker, df):
-    if IGNORE_LIVE_CANDLE and len(df) > 0:
+    # 1. BRUTAL CLEANUP: Drop any rows with missing data (Live market corruption)
+    df = df.dropna()
+    
+    # 2. SEVER THE LIVE CANDLE: Delete today's unclosed candle completely
+    if len(df) > 0:
         df = df.iloc[:-1]
 
     if len(df) < 50:
@@ -56,60 +64,47 @@ def check_setup(ticker, df):
     hh_confirmed = latest['Close'] > swing_high
     
     if hh_confirmed:
-        return {"Status": "🔥 Breakout Confirmed (HH)", "Swing High": round(float(swing_high), 2), "Latest": round(float(latest['Close']), 2)}
+        return {"Ticker": ticker, "Status": "🔥 Breakout Confirmed (HH)", "Swing High": round(float(swing_high), 2), "Latest": round(float(latest['Close']), 2)}
     elif in_accumulation_zone:
-        return {"Status": "📉 In Pullback Zone (HL)", "Swing High": round(float(swing_high), 2), "Latest": round(float(latest['Close']), 2)}
+        return {"Ticker": ticker, "Status": "📉 In Pullback Zone (HL)", "Swing High": round(float(swing_high), 2), "Latest": round(float(latest['Close']), 2)}
     return None
 
 def main():
-    print("=" * 70)
-    print("🚀 RUNNING MARKET STRUCTURE SCANNER...")
-    print(f"Settings -> Timeframe: {TIMEFRAME} | Ignoring Today's Live Candle: {IGNORE_LIVE_CANDLE}")
-    print("=" * 70)
+    # Streamlit visual status text
+    status_text = st.empty()
+    progress_bar = st.progress(0)
     
     results = []
     
-    for ticker in TICKERS:
-        # sys.stdout.flush forces the terminal to print this immediately before downloading
-        print(f"-> Fetching data for {ticker}... ", end="", flush=True) 
+    for i, ticker in enumerate(TICKERS):
+        # Update UI text so you know it's not frozen
+        status_text.text(f"Fetching data for {ticker}...")
         
         try:
-            # Using Ticker().history() is much more stable than download() for individual stocks
             stock = yf.Ticker(ticker)
             df = stock.history(period="1y", interval=TIMEFRAME)
             
-            if df.empty:
-                print("❌ No data found.")
-                continue
-                
-            print("✅ Data received. Scanning...", end="", flush=True)
-            result = check_setup(ticker, df)
+            if not df.empty:
+                result = check_setup(ticker, df)
+                if result:
+                    results.append(result)
+        except Exception:
+            pass # Silently skip errors on individual stocks to prevent total crashes
             
-            if result:
-                print(f" 🎯 SETUP FOUND: {result['Status']}")
-                result['Ticker'] = ticker
-                results.append(result)
-            else:
-                print(" ➖ No setup.")
-                
-        except Exception as e:
-            print(f"❌ Error: {e}")
-            
-    print("\n" + "=" * 70)
-    print("📊 FINAL SCAN RESULTS")
-    print("=" * 70)
+        progress_bar.progress((i + 1) / len(TICKERS))
+        
+    # Clear loading bars
+    status_text.empty()
+    progress_bar.empty()
+    
+    st.subheader("📊 Final Scan Results")
     
     if results:
-        print(f"{'TICKER':<15} | {'STATUS':<28} | {'SWING HIGH':<12} | {'CURRENT'}")
-        print("-" * 70)
-        for r in results:
-            print(f"{r['Ticker']:<15} | {r['Status']:<28} | {r['Swing High']:<12} | {r['Latest']}")
+        # Render a clean, interactive table in the web browser
+        final_df = pd.DataFrame(results)
+        st.dataframe(final_df, use_container_width=True, hide_index=True)
     else:
-        print("No stocks met the criteria today.")
-    
-    print("=" * 70)
-    
-    # THIS KEEPS THE WINDOW OPEN IF YOU DOUBLE-CLICKED THE FILE
+        st.warning("No stocks met the criteria today.")
 
-if __name__ == "__main__":
-    main()
+# Run the app
+main()
