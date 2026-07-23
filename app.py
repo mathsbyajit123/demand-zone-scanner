@@ -1,14 +1,16 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import warnings
-import traceback
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
 
-# ==========================================
-# ⚙️ SCANNER CONFIGURATION
-# ==========================================
+# --- 1. STREAMLIT WEB SETUP ---
+st.set_page_config(page_title="Market Scanner", layout="wide")
+st.title("🚀 Live Market Structure Scanner")
+st.markdown("This scanner is built to run safely on cloud servers during live market hours.")
+
 TICKERS = [
     "REDINGTON.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", 
     "INFY.NS", "TATASTEEL.NS", "SBIN.NS", "AAPL", "MSFT"
@@ -22,10 +24,10 @@ def calculate_indicators(df):
     return df
 
 def check_setup(ticker, df):
-    # 1. LIVE MARKET CLEANUP: Drop corrupted rows with missing data instantly
+    # LIVE MARKET SAFETY: Drop corrupted rows instantly
     df = df.dropna()
     
-    # 2. IGNORE TODAY'S INCOMPLETE CANDLE: 
+    # IGNORE TODAY'S INCOMPLETE CANDLE
     if len(df) > 0:
         df = df.iloc[:-1]
 
@@ -68,57 +70,40 @@ def check_setup(ticker, df):
         return {"Ticker": ticker, "Status": "📉 In Pullback Zone (HL)", "Swing High": round(float(swing_high), 2), "Latest": round(float(latest['Close']), 2)}
     return None
 
-def main():
-    print("=" * 75)
-    print("🚀 RUNNING MARKET STRUCTURE SCANNER (LIVE MARKET SAFE)...")
-    print("=" * 75)
+# --- 2. RUN THE SCAN BUTTON ---
+if st.button("Run Scanner Now", type="primary"):
     
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     results = []
     
-    for ticker in TICKERS:
-        # flush=True forces the terminal to print this BEFORE it freezes on the download
-        print(f"-> Fetching data for {ticker:<15} ... ", end="", flush=True) 
+    for i, ticker in enumerate(TICKERS):
+        # Update Streamlit UI text directly
+        status_text.text(f"Fetching live data for {ticker}...")
         
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period="1y", interval=TIMEFRAME)
             
-            if df.empty:
-                print("❌ No data found.")
-                continue
-                
-            print("✅ Data received. Scanning...", end="", flush=True)
-            result = check_setup(ticker, df)
-            
-            if result:
-                print(f" 🎯 SETUP FOUND: {result['Status']}")
-                results.append(result)
-            else:
-                print(" ➖ No setup.")
-                
+            if not df.empty:
+                result = check_setup(ticker, df)
+                if result:
+                    results.append(result)
+                    
         except Exception as e:
-            # If Yahoo Finance sends broken data, it prints the error but DOES NOT crash the script
-            print(f"❌ Error: {e}")
+            # If a stock fails, tell the web page but keep scanning the rest
+            st.toast(f"Skipped {ticker} due to data error.")
             
-    print("\n" + "=" * 75)
-    print("📊 FINAL SCAN RESULTS")
-    print("=" * 75)
+        progress_bar.progress((i + 1) / len(TICKERS))
+        
+    # Clear the loading indicators
+    status_text.empty()
+    progress_bar.empty()
     
+    # --- 3. RENDER RESULTS TO WEB BROWSER ---
+    st.subheader("📊 Scan Results")
     if results:
-        print(f"{'TICKER':<15} | {'STATUS':<28} | {'SWING HIGH':<12} | {'CURRENT'}")
-        print("-" * 75)
-        for r in results:
-            print(f"{r['Ticker']:<15} | {r['Status']:<28} | {r['Swing High']:<12} | {r['Latest']}")
+        final_df = pd.DataFrame(results)
+        st.dataframe(final_df, use_container_width=True, hide_index=True)
     else:
-        print("No stocks met the criteria today.")
-    print("=" * 75)
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print("\n❌ A FATAL ERROR OCCURRED:")
-        traceback.print_exc()
-    finally:
-        # This absolutely guarantees the black screen stays open so you can read it
-        input("\nPress Enter to exit...")
+        st.info("No stocks met the setup criteria today.")
