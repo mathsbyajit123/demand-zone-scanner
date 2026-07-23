@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SIDEBAR SETTINGS
 # ==========================================
-st.set_page_config(page_title="Momentum Scanner", layout="wide")
-st.title("🚀 Momentum & EMA Extension Scanner")
-st.markdown("Scans for stocks in a confirmed uptrend (21 > 44 EMA) where the current price is stretched 5% to 10% above the 21 EMA.")
+st.set_page_config(page_title="Extreme Extension Scanner", layout="wide")
+st.title("🚀 Bullish & Bearish Extension Scanner")
+st.markdown("Scans entire indices for stocks stretched 10%+ away from the 21 EMA in both uptrends and downtrends. (No volume or retracement logic).")
 
 st.sidebar.header("⚙️ Scanner Settings")
 
@@ -24,8 +24,7 @@ selected_index = st.sidebar.selectbox(
 
 # Extension Settings
 st.sidebar.subheader("Distance from Fast EMA")
-min_pct_above = st.sidebar.number_input("Minimum % Above EMA", min_value=1.0, max_value=20.0, value=5.0, step=0.5)
-max_pct_above = st.sidebar.number_input("Maximum % Above EMA", min_value=2.0, max_value=50.0, value=10.0, step=0.5)
+min_pct_distance = st.sidebar.number_input("Minimum % Distance", min_value=1.0, max_value=50.0, value=10.0, step=1.0)
 
 # Flexible Timeframe & EMAs
 st.sidebar.subheader("Chart Settings")
@@ -33,12 +32,10 @@ timeframe = st.sidebar.selectbox("Timeframe", ["1d", "1wk"], index=0)
 fast_ema_len = st.sidebar.number_input("Fast EMA Length", min_value=5, max_value=100, value=21)
 slow_ema_len = st.sidebar.number_input("Slow EMA Length", min_value=10, max_value=200, value=44)
 
-
 # ==========================================
 # 2. NSE INDEX DATA FETCHER
 # ==========================================
 def get_index_tickers(index_name):
-    """Bypasses NSE firewall to download the live index CSVs and extract symbols."""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     urls = {
@@ -91,23 +88,22 @@ def check_setup(ticker, df):
     df['EMA_Fast'] = df['Close'].ewm(span=fast_ema_len, adjust=False).mean()
     df['EMA_Slow'] = df['Close'].ewm(span=slow_ema_len, adjust=False).mean()
     
-    # Evaluate only the latest completed candle
     latest = df.iloc[-1]
     
     close_price = latest['Close']
     fast_ema = latest['EMA_Fast']
     slow_ema = latest['EMA_Slow']
     
-    # Rule 1: Fast EMA must be strictly above Slow EMA (Confirmed Uptrend)
-    if fast_ema <= slow_ema:
-        return None
-        
-    # Rule 2: Calculate the exact percentage the price is above the Fast EMA
-    pct_above_ema = ((close_price - fast_ema) / fast_ema) * 100
+    # Calculate exact percentage distance from Fast EMA
+    pct_diff = ((close_price - fast_ema) / fast_ema) * 100
     
-    # Rule 3: Check if it falls within the 5% to 10% range
-    if min_pct_above <= pct_above_ema <= max_pct_above:
-        return pct_above_ema, close_price, fast_ema
+    # Condition 1: Bullish Trend (21 > 44) AND Price is Extended UPWARD by 10%+
+    if fast_ema > slow_ema and pct_diff >= min_pct_distance:
+        return "🟢 Bullish Extension", pct_diff, close_price, fast_ema
+        
+    # Condition 2: Bearish Trend (21 < 44) AND Price is Extended DOWNWARD by 10%+
+    elif fast_ema < slow_ema and pct_diff <= -min_pct_distance:
+        return "🔴 Bearish Extension", pct_diff, close_price, fast_ema
         
     return None
 
@@ -122,7 +118,7 @@ if st.sidebar.button(f"Scan {selected_index}", type="primary"):
     if not ticker_list:
         st.error("Failed to load ticker list. Please try again.")
     else:
-        st.info(f"Loaded {len(ticker_list)} stocks. Running Momentum Scan...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Running Extension Scan...")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -133,22 +129,24 @@ if st.sidebar.button(f"Scan {selected_index}", type="primary"):
             
             try:
                 stock = yf.Ticker(ticker)
-                df = stock.history(period="6mo", interval=timeframe) # Only need 6mo for EMA 44
+                # 6 months of data is enough to calculate EMAs accurately
+                df = stock.history(period="6mo", interval=timeframe) 
                 
                 if not df.empty:
                     setup_data = check_setup(ticker, df)
                     
                     if setup_data:
-                        pct_extension, latest_c, fast_ema_val = setup_data
+                        trend_status, pct_extension, latest_c, fast_ema_val = setup_data
                         sector, mcap = fetch_metadata(ticker)
                         
                         results.append({
                             "Ticker": ticker.replace(".NS", ""),
                             "Sector": sector,
                             "Market Cap": mcap,
+                            "Status": trend_status,
                             "Current Price": round(float(latest_c), 2),
-                            "21 EMA Level": round(float(fast_ema_val), 2),
-                            "% Above EMA": f"+{pct_extension:.2f}%"
+                            f"{fast_ema_len} EMA Level": round(float(fast_ema_val), 2),
+                            "% Distance": f"{pct_extension:+.2f}%"
                         })
             except Exception:
                 pass 
@@ -165,8 +163,11 @@ if st.sidebar.button(f"Scan {selected_index}", type="primary"):
         
         if results:
             final_df = pd.DataFrame(results)
-            # Sort by highest extension percentage by default
-            final_df = final_df.sort_values(by="% Above EMA", ascending=False)
+            
+            # Sort by absolute distance (most extreme stretches at the top)
+            final_df['Abs_Distance'] = final_df['% Distance'].str.replace('%', '').str.replace('+', '').astype(float).abs()
+            final_df = final_df.sort_values(by="Abs_Distance", ascending=False).drop(columns=['Abs_Distance'])
+            
             st.dataframe(final_df, use_container_width=True, hide_index=True)
         else:
-            st.warning(f"Scan complete. No stocks in the {selected_index} are currently stretched {min_pct_above}% to {max_pct_above}% above the {fast_ema_len} EMA.")
+            st.warning(f"Scan complete. No stocks in the {selected_index} are extended by {min_pct_distance}% or more from the {fast_ema_len} EMA.")
