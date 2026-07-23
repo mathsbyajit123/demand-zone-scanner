@@ -1,15 +1,14 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
 import warnings
+import traceback
 
+# Suppress warnings
 warnings.filterwarnings('ignore')
 
-# --- STREAMLIT UI SETUP ---
-st.set_page_config(page_title="Live Market Scanner", layout="wide")
-st.title("🚀 Market Structure Scanner")
-st.markdown("---")
-
+# ==========================================
+# ⚙️ SCANNER CONFIGURATION
+# ==========================================
 TICKERS = [
     "REDINGTON.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", 
     "INFY.NS", "TATASTEEL.NS", "SBIN.NS", "AAPL", "MSFT"
@@ -23,10 +22,10 @@ def calculate_indicators(df):
     return df
 
 def check_setup(ticker, df):
-    # 1. BRUTAL CLEANUP: Drop any rows with missing data (Live market corruption)
+    # 1. LIVE MARKET CLEANUP: Drop corrupted rows with missing data instantly
     df = df.dropna()
     
-    # 2. SEVER THE LIVE CANDLE: Delete today's unclosed candle completely
+    # 2. IGNORE TODAY'S INCOMPLETE CANDLE: 
     if len(df) > 0:
         df = df.iloc[:-1]
 
@@ -70,41 +69,56 @@ def check_setup(ticker, df):
     return None
 
 def main():
-    # Streamlit visual status text
-    status_text = st.empty()
-    progress_bar = st.progress(0)
+    print("=" * 75)
+    print("🚀 RUNNING MARKET STRUCTURE SCANNER (LIVE MARKET SAFE)...")
+    print("=" * 75)
     
     results = []
     
-    for i, ticker in enumerate(TICKERS):
-        # Update UI text so you know it's not frozen
-        status_text.text(f"Fetching data for {ticker}...")
+    for ticker in TICKERS:
+        # flush=True forces the terminal to print this BEFORE it freezes on the download
+        print(f"-> Fetching data for {ticker:<15} ... ", end="", flush=True) 
         
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period="1y", interval=TIMEFRAME)
             
-            if not df.empty:
-                result = check_setup(ticker, df)
-                if result:
-                    results.append(result)
-        except Exception:
-            pass # Silently skip errors on individual stocks to prevent total crashes
+            if df.empty:
+                print("❌ No data found.")
+                continue
+                
+            print("✅ Data received. Scanning...", end="", flush=True)
+            result = check_setup(ticker, df)
             
-        progress_bar.progress((i + 1) / len(TICKERS))
-        
-    # Clear loading bars
-    status_text.empty()
-    progress_bar.empty()
-    
-    st.subheader("📊 Final Scan Results")
+            if result:
+                print(f" 🎯 SETUP FOUND: {result['Status']}")
+                results.append(result)
+            else:
+                print(" ➖ No setup.")
+                
+        except Exception as e:
+            # If Yahoo Finance sends broken data, it prints the error but DOES NOT crash the script
+            print(f"❌ Error: {e}")
+            
+    print("\n" + "=" * 75)
+    print("📊 FINAL SCAN RESULTS")
+    print("=" * 75)
     
     if results:
-        # Render a clean, interactive table in the web browser
-        final_df = pd.DataFrame(results)
-        st.dataframe(final_df, use_container_width=True, hide_index=True)
+        print(f"{'TICKER':<15} | {'STATUS':<28} | {'SWING HIGH':<12} | {'CURRENT'}")
+        print("-" * 75)
+        for r in results:
+            print(f"{r['Ticker']:<15} | {r['Status']:<28} | {r['Swing High']:<12} | {r['Latest']}")
     else:
-        st.warning("No stocks met the criteria today.")
+        print("No stocks met the criteria today.")
+    print("=" * 75)
 
-# Run the app
-main()
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("\n❌ A FATAL ERROR OCCURRED:")
+        traceback.print_exc()
+    finally:
+        # This absolutely guarantees the black screen stays open so you can read it
+        input("\nPress Enter to exit...")
