@@ -1,166 +1,122 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
-from nselib import capital_market
-import time
+import numpy as np
+from datetime import datetime
 import warnings
 
+# Suppress pandas warnings for cleaner terminal output
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# ⚙️ STREAMLIT PAGE SETUP
+# ⚙️ SCANNER CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="NSE Delivery Scanner", layout="wide")
-st.title("🚀 Advanced Market Cap & Delivery Scanner")
+# Add your stock tickers here (Use .NS suffix for Indian NSE stocks, e.g., REDINGTON.NS)
+TICKERS = [
+    "REDINGTON.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", 
+    "INFY.NS", "TATASTEEL.NS", "SBIN.NS", "AAPL", "MSFT"
+]
 
+# Flexible Timeframe Options: '1d' for Daily, '1wk' for Weekly
+TIMEFRAME = "1d" 
+
+# How many past candles to fetch to ensure EMAs calculate correctly
+LOOKBACK_PERIODS = 150 
 # ==========================================
-# 🎛️ SIDEBAR CONFIGURATION
-# ==========================================
-st.sidebar.header("Scanner Settings")
 
-default_tickers = "REDINGTON, TATASTEEL, RELIANCE, INFY, HDFCBANK, ZOMATO"
-tickers_input = st.sidebar.text_area("Tickers (Comma separated)", default_tickers)
+def calculate_indicators(df):
+    """Calculates EMAs and Volume SMA."""
+    df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
+    df['Vol_SMA_20'] = df['Volume'].rolling(window=20).mean()
+    return df.dropna()
 
-days_to_scan = st.sidebar.slider("Historical Days to Scan", min_value=3, max_value=20, value=10)
-
-sort_by = st.sidebar.selectbox(
-    "Sort Results By", 
-    ["Deliv Multiplier", "% Change", "Latest Deliv", f"{days_to_scan}D Avg Deliv", "Deliv Change"]
-)
-
-ascending = st.sidebar.checkbox("Lowest to Highest (Ascending)", value=False)
-run_scan = st.sidebar.button("Run Scanner", type="primary")
-
-# ==========================================
-# 🧠 CORE FUNCTIONS
-# ==========================================
-def get_market_cap_category(mcap_cr):
-    if mcap_cr == 0: return "Unknown"
-    elif mcap_cr < 100: return "Under 100 Cr"
-    elif 100 <= mcap_cr < 500: return "100 Cr - 500 Cr"
-    elif 500 <= mcap_cr < 1000: return "500 Cr - 1000 Cr"
-    elif 1000 <= mcap_cr < 10000: return "1000 Cr - 10000 Cr"
-    elif 10000 <= mcap_cr < 100000: return "10000 Cr - 1 Lakh Cr"
-    else: return "Over 1 Lakh Cr"
-
-def fetch_historical_delivery(days):
-    valid_dataframes = []
-    current_date = datetime.now()
-    days_collected = 0
-    
-    # UI Progress indicators
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    while days_collected < days:
-        if current_date.weekday() < 5:  # Skip weekends
-            date_str = current_date.strftime("%d-%m-%Y")
-            status_text.text(f"Fetching official NSE Bhavcopy for {date_str}...")
-            
-            try:
-                df = capital_market.bhav_copy_with_delivery(date_str)
-                df.columns = df.columns.str.strip()
-                df = df[df['SERIES'].str.strip() == 'EQ']
-                df['DATE'] = current_date
-                
-                valid_dataframes.append(df)
-                days_collected += 1
-                progress_bar.progress(days_collected / days)
-                time.sleep(1.5)  # Pause to prevent NSE from blocking the IP
-            except Exception:
-                pass  # Skip if it's a holiday or data isn't published yet
-                
-        current_date -= timedelta(days=1)
+def check_setup(ticker, df):
+    """Scans the dataframe for the specific 21/44 Pullback & HH setup."""
+    if len(df) < 50:
+        return None
         
-    # Clear progress UI once done
-    status_text.empty()
-    progress_bar.empty()
+    df = calculate_indicators(df)
     
-    if not valid_dataframes:
-        return pd.DataFrame()
+    # 1. Find the last time 21 EMA crossed above 44 EMA
+    cross_ups = (df['EMA_21'] > df['EMA_44']) & (df['EMA_21'].shift(1) <= df['EMA_44'].shift(1))
+    
+    if not cross_ups.any():
+        return None # No crossover found in lookback period
         
-    return pd.concat(valid_dataframes, ignore_index=True)
-
-# ==========================================
-# 🚀 EXECUTION BLOCK
-# ==========================================
-if run_scan:
-    ticker_list = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    last_cross_idx = cross_ups[::-1].idxmax()
+    post_cross = df.loc[last_cross_idx:]
     
-    if not ticker_list:
-        st.warning("⚠️ Please enter at least one ticker symbol.")
-    else:
-        with st.spinner("Downloading historical delivery data from NSE..."):
-            hist_df = fetch_historical_delivery(days_to_scan)
-            
-        if hist_df.empty:
-            st.error("❌ Failed to fetch historical data. The NSE servers might be down, or it is a holiday.")
-        else:
-            hist_df['DELIV_QTY'] = pd.to_numeric(hist_df['DELIV_QTY'].astype(str).str.replace(',', ''), errors='coerce')
-            results = []
-            
-            status_text = st.empty()
-            
-            for i, ticker in enumerate(ticker_list):
-                status_text.text(f"Analyzing {ticker} & fetching Yahoo Finance metadata ({i+1}/{len(ticker_list)})...")
-                ticker_data = hist_df[hist_df['SYMBOL'] == ticker].sort_values(by='DATE')
-                
-                if ticker_data.empty or len(ticker_data) < 2:
-                    continue
-                    
-                # Calculations
-                avg_delivery = ticker_data['DELIV_QTY'].mean()
-                latest_delivery = ticker_data.iloc[-1]['DELIV_QTY']
-                prev_delivery = ticker_data.iloc[-2]['DELIV_QTY']
-                
-                change_in_delivery = latest_delivery - prev_delivery
-                pct_change_delivery = (change_in_delivery / prev_delivery) * 100 if prev_delivery > 0 else 0
-                delivery_times = (latest_delivery / avg_delivery) if avg_delivery > 0 else 0
+    # Needs at least a few days of data after cross to form a structure
+    if len(post_cross) < 3: 
+        return None
 
-                # Fetch Sector & Market Cap
-                try:
-                    yf_ticker = yf.Ticker(f"{ticker}.NS")
-                    info = yf_ticker.info
-                    mcap_cr = info.get('marketCap', 0) / 10_000_000
-                    sector = info.get('sector', 'N/A')
-                    mcap_category = get_market_cap_category(mcap_cr)
-                except Exception:
-                    sector = "N/A"
-                    mcap_category = "Unknown"
+    # 2. Identify the Swing High (The Resistance / CHoCH level)
+    swing_high = post_cross['High'].max()
+    
+    # 3. Check for the Retracement (Dry Volume + Touches EMA Zone)
+    # Rules: Low touches or goes below 21 EMA, Close stays above 44 EMA, Volume is below 20 SMA
+    pullback_days = post_cross[
+        (post_cross['Low'] <= post_cross['EMA_21']) & 
+        (post_cross['Close'] >= post_cross['EMA_44']) & 
+        (post_cross['Volume'] < post_cross['Vol_SMA_20'])
+    ]
+    
+    if pullback_days.empty:
+        return None # No valid dry volume pullback occurred yet
+        
+    # 4. Determine Current Market State (Based on the latest completed candle)
+    latest = post_cross.iloc[-1]
+    
+    # Check if the most recent candle is currently sitting in the accumulation zone
+    in_accumulation_zone = (
+        (latest['Low'] <= latest['EMA_21']) and 
+        (latest['Close'] >= latest['EMA_44']) and 
+        (latest['Volume'] < latest['Vol_SMA_20'])
+    )
+    
+    # Check if the most recent candle has broken out above the swing high (HH Confirmed)
+    hh_confirmed = latest['Close'] > swing_high
+    
+    if hh_confirmed:
+        return {"Ticker": ticker, "Status": "🔥 Breakout Confirmed (HH)", "Swing High": round(swing_high, 2), "Latest Close": round(latest['Close'], 2)}
+    elif in_accumulation_zone:
+        return {"Ticker": ticker, "Status": "📉 In Pullback Zone (HL)", "Swing High": round(swing_high, 2), "Latest Close": round(latest['Close'], 2)}
+    
+    return None
 
-                results.append({
-                    "Ticker": ticker,
-                    "Sector": sector,
-                    "Market Cap": mcap_category,
-                    f"{days_to_scan}D Avg Deliv": avg_delivery,
-                    "Latest Deliv": latest_delivery,
-                    "Deliv Change": change_in_delivery,
-                    "% Change": pct_change_delivery,
-                    "Deliv Multiplier": delivery_times
-                })
+def main():
+    print(f"\n🚀 Running Market Structure Scanner...")
+    print(f"Timeframe: {TIMEFRAME.upper()} | Tickers to Scan: {len(TICKERS)}\n")
+    print("-" * 65)
+    print(f"{'TICKER':<15} | {'STATUS':<28} | {'BREAKOUT LVL':<12} | {'CURRENT'}")
+    print("-" * 65)
+    
+    results_found = False
+    
+    for ticker in TICKERS:
+        try:
+            # Fetch data from Yahoo Finance
+            df = yf.download(ticker, period="1y", interval=TIMEFRAME, progress=False)
+            if df.empty:
+                continue
                 
-            status_text.empty()
+            # Flatten multi-index columns if they exist (happens in newer yfinance versions)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+                
+            result = check_setup(ticker, df)
             
-            if results:
-                # Convert to Pandas DataFrame
-                final_df = pd.DataFrame(results)
+            if result:
+                results_found = True
+                print(f"{result['Ticker']:<15} | {result['Status']:<28} | {result['Swing High']:<12} | {result['Latest Close']}")
                 
-                # Apply Sorting
-                if sort_by in final_df.columns:
-                    final_df = final_df.sort_values(by=sort_by, ascending=ascending)
-                
-                # Format numbers for clean UI rendering
-                display_df = final_df.copy()
-                display_df[f'{days_to_scan}D Avg Deliv'] = display_df[f'{days_to_scan}D Avg Deliv'].apply(lambda x: f"{int(x):,}")
-                display_df['Latest Deliv'] = display_df['Latest Deliv'].apply(lambda x: f"{int(x):,}")
-                display_df['Deliv Change'] = display_df['Deliv Change'].apply(lambda x: f"{int(x):,}")
-                display_df['% Change'] = display_df['% Change'].apply(lambda x: f"{x:.2f}%")
-                display_df['Deliv Multiplier'] = display_df['Deliv Multiplier'].apply(lambda x: f"{x:.2f}x")
-                
-                st.success("✅ Scan Complete!")
-                
-                # Render the interactive Streamlit table
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("No valid data found for the provided tickers. Check your ticker spellings.")
+        except Exception as e:
+            print(f"Error processing {ticker}: {e}")
+            
+    print("-" * 65)
+    if not results_found:
+        print("No stocks currently meet the setup criteria.")
+    print("Scan Complete.\n")
+
+if __name__ == "__main__":
+    main()
