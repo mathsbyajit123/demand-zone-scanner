@@ -1,7 +1,6 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
 import warnings
 
 # Suppress pandas warnings for cleaner terminal output
@@ -10,7 +9,6 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # ⚙️ SCANNER CONFIGURATION
 # ==========================================
-# Add your stock tickers here (Use .NS suffix for Indian NSE stocks, e.g., REDINGTON.NS)
 TICKERS = [
     "REDINGTON.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", 
     "INFY.NS", "TATASTEEL.NS", "SBIN.NS", "AAPL", "MSFT"
@@ -19,8 +17,9 @@ TICKERS = [
 # Flexible Timeframe Options: '1d' for Daily, '1wk' for Weekly
 TIMEFRAME = "1d" 
 
-# How many past candles to fetch to ensure EMAs calculate correctly
-LOOKBACK_PERIODS = 150 
+# Set to True if running DURING live market hours (Ignores incomplete today's bar)
+# Set to False if running AFTER market close
+IGNORE_LIVE_CANDLE = True 
 # ==========================================
 
 def calculate_indicators(df):
@@ -32,6 +31,11 @@ def calculate_indicators(df):
 
 def check_setup(ticker, df):
     """Scans the dataframe for the specific 21/44 Pullback & HH setup."""
+    
+    # If market is currently open, drop the incomplete live candle
+    if IGNORE_LIVE_CANDLE and len(df) > 0:
+        df = df.iloc[:-1]
+
     if len(df) < 50:
         return None
         
@@ -41,66 +45,78 @@ def check_setup(ticker, df):
     cross_ups = (df['EMA_21'] > df['EMA_44']) & (df['EMA_21'].shift(1) <= df['EMA_44'].shift(1))
     
     if not cross_ups.any():
-        return None # No crossover found in lookback period
+        return None # No crossover found
         
     last_cross_idx = cross_ups[::-1].idxmax()
     post_cross = df.loc[last_cross_idx:]
     
-    # Needs at least a few days of data after cross to form a structure
+    # Needs at least 3 candles after the cross to establish a valid structure
     if len(post_cross) < 3: 
         return None
 
-    # 2. Identify the Swing High (The Resistance / CHoCH level)
-    swing_high = post_cross['High'].max()
+    # 2. Identify Swing High from PAST candles (Excluding the latest candle being evaluated)
+    prior_candles = post_cross.iloc[:-1]
+    if prior_candles.empty:
+        return None
+        
+    swing_high = prior_candles['High'].max()
     
-    # 3. Check for the Retracement (Dry Volume + Touches EMA Zone)
-    # Rules: Low touches or goes below 21 EMA, Close stays above 44 EMA, Volume is below 20 SMA
-    pullback_days = post_cross[
-        (post_cross['Low'] <= post_cross['EMA_21']) & 
-        (post_cross['Close'] >= post_cross['EMA_44']) & 
-        (post_cross['Volume'] < post_cross['Vol_SMA_20'])
+    # 3. Check for Retracement (Dry Volume + Touched EMA Zone in prior structure)
+    pullback_days = prior_candles[
+        (prior_candles['Low'] <= prior_candles['EMA_21']) & 
+        (prior_candles['Close'] >= prior_candles['EMA_44']) & 
+        (prior_candles['Volume'] < prior_candles['Vol_SMA_20'])
     ]
     
     if pullback_days.empty:
         return None # No valid dry volume pullback occurred yet
         
-    # 4. Determine Current Market State (Based on the latest completed candle)
+    # 4. Evaluate Current Completed Candle
     latest = post_cross.iloc[-1]
     
-    # Check if the most recent candle is currently sitting in the accumulation zone
+    # Check if latest candle is sitting in the accumulation zone
     in_accumulation_zone = (
         (latest['Low'] <= latest['EMA_21']) and 
         (latest['Close'] >= latest['EMA_44']) and 
         (latest['Volume'] < latest['Vol_SMA_20'])
     )
     
-    # Check if the most recent candle has broken out above the swing high (HH Confirmed)
+    # Check if latest candle closed strictly ABOVE the prior swing high
     hh_confirmed = latest['Close'] > swing_high
     
     if hh_confirmed:
-        return {"Ticker": ticker, "Status": "🔥 Breakout Confirmed (HH)", "Swing High": round(swing_high, 2), "Latest Close": round(latest['Close'], 2)}
+        return {
+            "Ticker": ticker, 
+            "Status": "🔥 Breakout Confirmed (HH)", 
+            "Swing High": round(float(swing_high), 2), 
+            "Latest Close": round(float(latest['Close']), 2)
+        }
     elif in_accumulation_zone:
-        return {"Ticker": ticker, "Status": "📉 In Pullback Zone (HL)", "Swing High": round(swing_high, 2), "Latest Close": round(latest['Close'], 2)}
+        return {
+            "Ticker": ticker, 
+            "Status": "📉 In Pullback Zone (HL)", 
+            "Swing High": round(float(swing_high), 2), 
+            "Latest Close": round(float(latest['Close']), 2)
+        }
     
     return None
 
 def main():
     print(f"\n🚀 Running Market Structure Scanner...")
-    print(f"Timeframe: {TIMEFRAME.upper()} | Tickers to Scan: {len(TICKERS)}\n")
+    print(f"Timeframe: {TIMEFRAME.upper()} | Live Candle Ignored: {IGNORE_LIVE_CANDLE} | Tickers: {len(TICKERS)}\n")
     print("-" * 65)
-    print(f"{'TICKER':<15} | {'STATUS':<28} | {'BREAKOUT LVL':<12} | {'CURRENT'}")
+    print(f"{'TICKER':<15} | {'STATUS':<28} | {'SWING HIGH':<12} | {'CURRENT'}")
     print("-" * 65)
     
     results_found = False
     
     for ticker in TICKERS:
         try:
-            # Fetch data from Yahoo Finance
-            df = yf.download(ticker, period="1y", interval=TIMEFRAME, progress=False)
+            df = yf.download(ticker, period="1y", interval=TIMEFRAME, progress=False, auto_adjust=True)
             if df.empty:
                 continue
                 
-            # Flatten multi-index columns if they exist (happens in newer yfinance versions)
+            # Flatten multi-index columns if present (compatibility with newer yfinance versions)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
                 
