@@ -61,14 +61,14 @@ def fetch_metadata(ticker):
         return "N/A"
 
 def check_setup(ticker, df):
-    # Safety: Drop missing data and ignore unclosed current candle
+    # Drop missing data and ignore unclosed current candle
     df = df.dropna()
     if len(df) > 0:
         df = df.iloc[:-1] 
 
     if len(df) < 50: return None
         
-    # Calculate exactly what you requested: 20 EMA, 50 EMA, and Volume Average
+    # Calculate 20 EMA, 50 EMA, and Volume Average
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['Vol_SMA'] = df['Volume'].rolling(window=20).mean()
@@ -80,7 +80,7 @@ def check_setup(ticker, df):
     # Rule 1: Uptrend Confirmed (20 EMA is strictly above 50 EMA)
     is_uptrend = latest['EMA_20'] > latest['EMA_50']
     
-    # Rule 2: Pullback to 20 EMA (The Low touches or drops slightly below 20 EMA, but Close stays above 50 EMA to hold structure)
+    # Rule 2: Pullback to 20 EMA (The Low touches or drops slightly below 20 EMA, but Close stays above 50 EMA)
     touched_20_ema = latest['Low'] <= latest['EMA_20']
     held_trend = latest['Close'] > latest['EMA_50']
     
