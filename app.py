@@ -11,31 +11,37 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SIDEBAR SETTINGS
 # ==========================================
-st.set_page_config(page_title="S&R Zone Scanner", layout="wide")
-st.title("🎯 Support & Resistance Zone Scanner")
-st.markdown("Scans for stocks bouncing off a 2% Support Zone (or retracing to a broken resistance) with a clear Resistance Target above.")
+st.set_page_config(page_title="MTF Zone & CHoCH Scanner", layout="wide")
+st.title("🎯 MTF Support Zone & LTF CHoCH Scanner")
+st.markdown("Identifies stocks touching a major HTF Support Zone that have just confirmed a Market Structure Shift (CHoCH / Higher High) on the LTF.")
 
 st.sidebar.header("⚙️ Scanner Settings")
 
-# Dynamic Index Selector
 selected_index = st.sidebar.selectbox(
     "Select Index to Scan", 
     ["Nifty 50", "Nifty Midcap 100", "Nifty Smallcap 250", "Nifty 500"]
 )
 
-st.sidebar.subheader("Zone & Target Rules")
-# The minimum distance to the next resistance to ensure a good Risk/Reward
-min_target_pct = st.sidebar.number_input("Minimum Target Distance (%)", min_value=1.0, max_value=30.0, value=5.0, step=1.0)
+st.sidebar.subheader("Timeframe Settings")
+htf_selection = st.sidebar.selectbox("Higher Timeframe (HTF)", ["1d", "1wk"], index=0)
 
-st.sidebar.subheader("Chart Settings")
-timeframe = st.sidebar.selectbox("Timeframe", ["1d", "1wk"], index=0)
+# Automatically set LTF based on HTF selection
+if htf_selection == "1d":
+    ltf_selection = "15m"
+    htf_period = "1y"
+    ltf_period = "60d" # yfinance limit for 15m is 60 days
+else:
+    ltf_selection = "1h"
+    htf_period = "2y"
+    ltf_period = "730d" # yfinance limit for 1h is 730 days
+
+st.sidebar.info(f"**Current Setup:**\nHTF: {htf_selection.upper()}\nLTF: {ltf_selection.upper()}")
 
 # ==========================================
 # 2. NSE INDEX DATA FETCHER
 # ==========================================
 def get_index_tickers(index_name):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
     urls = {
         "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
         "Nifty Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
@@ -54,84 +60,106 @@ def get_index_tickers(index_name):
         return []
 
 # ==========================================
-# 3. CORE LOGIC & MATHEMATICS
+# 3. CORE LOGIC: HTF ZONES & LTF CHoCH
 # ==========================================
 def fetch_metadata(ticker):
     try:
         info = yf.Ticker(ticker).info
-        sector = info.get('sector', 'N/A')
-        return sector
+        return info.get('sector', 'N/A')
     except:
         return "N/A"
 
-def check_setup(ticker, df):
-    # Safety: Drop missing data and ignore unclosed current candle
-    df = df.dropna()
-    if len(df) > 0:
-        df = df.iloc[:-1] 
-
-    if len(df) < 50: return None
-        
-    latest_close = df.iloc[-1]['Close']
+def check_htf_support(df_htf):
+    """Scans HTF to find major support zones and checks if price is currently at one."""
+    df_htf = df_htf.dropna()
+    if len(df_htf) < 50: return None
     
-    # --- STEP 1: Find Pivot Highs & Lows (Swing Points) ---
-    window = 10 # Looks 10 candles to the left and right to confirm a major swing
-    highs = df['High'].values
-    lows = df['Low'].values
+    latest_close = df_htf.iloc[-1]['Close']
+    latest_low = df_htf.iloc[-1]['Low']
+    prev_low = df_htf.iloc[-2]['Low']
+    
+    # 1. Map Historical Pivot Points
+    window = 10
+    highs = df_htf['High'].values
+    lows = df_htf['Low'].values
     raw_levels = []
 
-    for i in range(window, len(df) - window):
-        # If it's a fractal high
-        if max(highs[i-window:i+window+1]) == highs[i]:
-            raw_levels.append(highs[i])
-        # If it's a fractal low
-        if min(lows[i-window:i+window+1]) == lows[i]:
-            raw_levels.append(lows[i])
+    for i in range(window, len(df_htf) - window):
+        if max(highs[i-window:i+window+1]) == highs[i]: raw_levels.append(highs[i])
+        if min(lows[i-window:i+window+1]) == lows[i]: raw_levels.append(lows[i])
 
     if not raw_levels: return None
 
-    # --- STEP 2: Cluster Pivots into <2% Zones ---
+    # 2. Cluster into 2% Zones
     raw_levels = sorted(list(set(raw_levels)))
     zones = []
     current_cluster = [raw_levels[0]]
 
     for level in raw_levels[1:]:
-        # If the level is within 2% of the base of the current cluster, merge them
         if level <= current_cluster[0] * 1.02: 
             current_cluster.append(level)
         else:
-            # Calculate the median of the zone and save it, then start a new zone
             zones.append(np.median(current_cluster))
             current_cluster = [level]
-            
     zones.append(np.median(current_cluster))
 
-    if len(zones) < 2: return None
+    # 3. Identify closest Support below current price
+    supports = [z for z in zones if z < latest_close]
+    if not supports: return None
+    s1 = max(supports)
 
-    # --- STEP 3: Identify Immediate Support and Resistance ---
-    # Any zone below current price is acting as Support (Even if it used to be Resistance)
-    supports = [z for z in zones if z <= latest_close]
-    # Any zone above current price is acting as Resistance Target
-    resistances = [z for z in zones if z > latest_close]
-
-    if not supports or not resistances: return None
-
-    # The closest support below
-    s1 = max(supports) 
-    # The closest resistance above
-    r1 = min(resistances) 
-
-    # --- STEP 4: Apply Scanner Rules ---
+    # 4. Check if recent price touched or is hovering in the 2% support zone
+    # Condition: Current or previous low dipped into the zone, but price is closing above it.
+    in_zone = (latest_low <= s1 * 1.02 or prev_low <= s1 * 1.02) and (latest_close >= s1 * 0.98)
     
-    # Rule 1: Entry Condition - Price must be sitting near the S1 zone (Max 2% above it)
-    near_support = latest_close <= (s1 * 1.02)
-    
-    # Rule 2: Target Condition - The R1 zone must be far enough away to be profitable
-    target_distance_pct = ((r1 - latest_close) / latest_close) * 100
-    valid_target = target_distance_pct >= min_target_pct
+    if in_zone:
+        return s1
+    return None
 
-    if near_support and valid_target:
-        return s1, r1, target_distance_pct, latest_close
+def check_ltf_choch(df_ltf):
+    """Scans LTF to verify if Market Structure Shift (CHoCH) occurred after HTF touch."""
+    df_ltf = df_ltf.dropna()
+    if len(df_ltf) < 30: return None
+    
+    # Focus on the recent LTF price action (last 100 LTF candles)
+    recent_df = df_ltf.tail(100).copy()
+    latest_close = recent_df.iloc[-1]['Close']
+    
+    # 1. Find LTF Swing Highs and Lows
+    window = 5
+    recent_df['Swing_High'] = False
+    recent_df['Swing_Low'] = False
+    
+    highs = recent_df['High'].values
+    lows = recent_df['Low'].values
+    
+    for i in range(window, len(recent_df) - window):
+        if max(highs[i-window:i+window+1]) == highs[i]:
+            recent_df.iloc[i, recent_df.columns.get_loc('Swing_High')] = True
+        if min(lows[i-window:i+window+1]) == lows[i]:
+            recent_df.iloc[i, recent_df.columns.get_loc('Swing_Low')] = True
+
+    # 2. Identify the absolute lowest point recently (The HTF Touch)
+    if not recent_df['Swing_Low'].any(): return None
+    
+    # Find the index of the absolute lowest price in this recent window
+    lowest_idx = recent_df['Low'].idxmin()
+    
+    # 3. Find the last Swing High that occurred strictly BEFORE the absolute low
+    prior_action = recent_df.loc[:lowest_idx]
+    swing_highs_before_low = prior_action[prior_action['Swing_High'] == True]
+    
+    if swing_highs_before_low.empty: return None
+    
+    # The crucial Lower High (Supply) that caused the drop into HTF support
+    last_supply_high = swing_highs_before_low.iloc[-1]['High']
+    
+    # 4. The CHoCH Trigger: Has the LTF price crossed above that supply high?
+    # Ensure it actually broke out and didn't just wick it
+    choch_confirmed = latest_close > last_supply_high
+    
+    if choch_confirmed:
+        return last_supply_high, latest_close
         
     return None
 
@@ -146,36 +174,45 @@ if st.sidebar.button(f"Scan {selected_index}", type="primary"):
     if not ticker_list:
         st.error("Failed to load ticker list. Please try again.")
     else:
-        st.info(f"Loaded {len(ticker_list)} stocks. Mapping S&R Zones...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Running MTFA Scanner...")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            status_text.text(f"Scanning {i+1}/{len(ticker_list)}: {ticker}...")
+            status_text.text(f"Scanning {i+1}/{len(ticker_list)}: {ticker} (HTF...)")
             
             try:
                 stock = yf.Ticker(ticker)
-                # Need at least 1 year to map major support/resistance zones accurately
-                df = stock.history(period="1y", interval=timeframe) 
                 
-                if not df.empty:
-                    setup_data = check_setup(ticker, df)
+                # --- STEP 1: Evaluate Higher Timeframe (HTF) ---
+                df_htf = stock.history(period=htf_period, interval=htf_selection)
+                
+                if not df_htf.empty:
+                    htf_support = check_htf_support(df_htf)
                     
-                    if setup_data:
-                        s1_val, r1_val, tgt_pct, latest_c = setup_data
-                        sector = fetch_metadata(ticker)
+                    # --- STEP 2: Evaluate Lower Timeframe (LTF) if HTF passes ---
+                    if htf_support:
+                        status_text.text(f"Scanning {i+1}/{len(ticker_list)}: {ticker} (Checking LTF CHoCH...)")
                         
-                        results.append({
-                            "Ticker": ticker.replace(".NS", ""),
-                            "Sector": sector,
-                            "Status": "✅ In Support Zone",
-                            "Current Price": round(float(latest_c), 2),
-                            "Support Base": round(float(s1_val), 2),
-                            "Resistance Target": round(float(r1_val), 2),
-                            "Target Distance": f"+{tgt_pct:.2f}%"
-                        })
+                        df_ltf = stock.history(period=ltf_period, interval=ltf_selection)
+                        
+                        if not df_ltf.empty:
+                            ltf_data = check_ltf_choch(df_ltf)
+                            
+                            if ltf_data:
+                                ltf_breakout_lvl, latest_c = ltf_data
+                                sector = fetch_metadata(ticker)
+                                
+                                results.append({
+                                    "Ticker": ticker.replace(".NS", ""),
+                                    "Sector": sector,
+                                    "Status": f"🔥 {ltf_selection.upper()} CHoCH Confirmed",
+                                    "Current Price": round(float(latest_c), 2),
+                                    "HTF Support Zone": round(float(htf_support), 2),
+                                    "LTF Breakout Lvl": round(float(ltf_breakout_lvl), 2)
+                                })
             except Exception:
                 pass 
                 
@@ -187,14 +224,11 @@ if st.sidebar.button(f"Scan {selected_index}", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 Zone Scan Results: {selected_index}")
+        st.subheader(f"📊 {selected_index} Scan Results (HTF: {htf_selection.upper()} | LTF: {ltf_selection.upper()})")
         
         if results:
             final_df = pd.DataFrame(results)
-            # Sort by the highest available target percentage
-            final_df['Sort_Tgt'] = final_df['Target Distance'].str.replace('%', '').str.replace('+', '').astype(float)
-            final_df = final_df.sort_values(by="Sort_Tgt", ascending=False).drop(columns=['Sort_Tgt'])
-            
             st.dataframe(final_df, use_container_width=True, hide_index=True)
+            st.success("Scanner completed successfully. Stocks listed above have touched a major HTF support and confirmed a trend reversal on the LTF.")
         else:
-            st.warning(f"Scan complete. No stocks are currently bouncing in a 2% support zone with a {min_target_pct}%+ resistance target above.")
+            st.warning(f"Scan complete. No stocks in the {selected_index} currently show an HTF Support Touch combined with an LTF Market Structure Shift.")
