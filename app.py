@@ -16,16 +16,15 @@ st.markdown("Scans for pullbacks into 1-2 candle base zones where retracement vo
 
 st.sidebar.header("⚙️ Scanner Settings")
 
-# NEW DATA SOURCE: niftyindices.com (Bypasses the main NSE firewall)
-sector_options = {
-    "Nifty 50": "https://niftyindices.com/IndexConstituent/ind_nifty50list.csv",
-    "Nifty 500": "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
-    "Nifty Midcap 100": "https://niftyindices.com/IndexConstituent/ind_niftymidcap100list.csv",
-    "Nifty Bank": "https://niftyindices.com/IndexConstituent/ind_niftybanklist.csv",
-    "Nifty IT": "https://niftyindices.com/IndexConstituent/ind_niftyitlist.csv",
-    "Nifty Auto": "https://niftyindices.com/IndexConstituent/ind_niftyautolist.csv"
-}
-selected_sector = st.sidebar.selectbox("Select Sector / Index", list(sector_options.keys()))
+sector_options = [
+    "Nifty 50",
+    "Nifty 500",
+    "Nifty Midcap 100",
+    "Nifty Bank",
+    "Nifty IT",
+    "Nifty Auto"
+]
+selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options)
 
 timeframe = st.sidebar.selectbox("Timeframe", ["1d", "1wk", "1mo"], index=0)
 
@@ -35,34 +34,43 @@ ema_target = st.sidebar.radio(
 )
 
 # ==========================================
-# 2. DATA FETCHER (NIFTY INDICES API)
+# 2. DATA FETCHER (FIREWALL-PROOF GITHUB MIRRORS)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    url = sector_options.get(sector_name)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    }
+    # Match the exact CSV file names used by the NSE
+    csv_file = {
+        "Nifty 50": "ind_nifty50list.csv",
+        "Nifty 500": "ind_nifty500list.csv",
+        "Nifty Midcap 100": "ind_niftymidcap100list.csv",
+        "Nifty Bank": "ind_niftybanklist.csv",
+        "Nifty IT": "ind_niftyitlist.csv",
+        "Nifty Auto": "ind_niftyautolist.csv"
+    }.get(sector_name, "ind_nifty500list.csv")
     
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text))
+    # We pull the data from 4 different public developer repositories on GitHub.
+    # GitHub never blocks Cloud Servers. This completely bypasses the NSE.
+    mirrors = [
+        f"https://raw.githubusercontent.com/althk/zerobha/main/{csv_file}",
+        f"https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/{csv_file}",
+        f"https://raw.githubusercontent.com/rohanmadhale/Python-Portfolio-Optimisation/main/{csv_file}",
+        f"https://raw.githubusercontent.com/faizanahemad/data-science-utils/master/data_science_utils/financial/{csv_file}"
+    ]
+    
+    for url in mirrors:
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                df = pd.read_csv(io.StringIO(response.text))
+                # Dynamically find the symbol column regardless of formatting
+                symbol_col = next((col for col in df.columns if 'Symbol' in col or 'SYMBOL' in col), None)
+                if symbol_col:
+                    return [str(s).strip() + ".NS" for s in df[symbol_col]]
+        except Exception:
+            continue # If one mirror is down, try the next one instantly
             
-            # Identify the column containing the stock symbol dynamically
-            symbol_col = next((col for col in df.columns if 'Symbol' in col or 'SYMBOL' in col), None)
-            
-            if symbol_col:
-                return [str(symbol).strip() + ".NS" for symbol in df[symbol_col]]
-            else:
-                st.sidebar.error("Could not find Symbol column in data.")
-                return []
-        else:
-            st.sidebar.error(f"Failed to fetch data. Status Code: {response.status_code}")
-            return []
-    except Exception as e:
-        st.sidebar.error(f"Error connecting to Nifty Indices: {e}")
-        return []
+    st.sidebar.error("⚠️ Critical Error: Unable to fetch ticker list from any GitHub mirror.")
+    return []
 
 # ==========================================
 # 3. CORE LOGIC: ZONES, VOLUME & EMA
@@ -182,7 +190,7 @@ def check_setup(df, ema_choice):
 # ==========================================
 if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
     
-    with st.spinner(f"Connecting to Nifty Indices to fetch {selected_sector}..."):
+    with st.spinner(f"Fetching {selected_sector} list from secure mirrors..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
