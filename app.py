@@ -1,6 +1,8 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
+import io
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -14,14 +16,14 @@ st.markdown("Scans for pullbacks into 1-2 candle base zones where retracement vo
 
 st.sidebar.header("⚙️ Scanner Settings")
 
-# Local CSV files (Make sure these are uploaded to your GitHub)
+# Direct NSE Web URLs (NO LOCAL CSV REQUIRED)
 sector_options = {
-    "Nifty 50": "ind_nifty50list.csv",
-    "Nifty 500": "ind_nifty500list.csv",
-    "Nifty Midcap 100": "ind_niftymidcap100list.csv",
-    "Nifty Bank": "ind_niftybanklist.csv",
-    "Nifty IT": "ind_niftyitlist.csv",
-    "Nifty Auto": "ind_niftyautolist.csv"
+    "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
+    "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+    "Nifty Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
+    "Nifty Bank": "https://archives.nseindia.com/content/indices/ind_niftybanklist.csv",
+    "Nifty IT": "https://archives.nseindia.com/content/indices/ind_niftyitlist.csv",
+    "Nifty Auto": "https://archives.nseindia.com/content/indices/ind_niftyautolist.csv"
 }
 selected_sector = st.sidebar.selectbox("Select Sector / Index", list(sector_options.keys()))
 
@@ -33,19 +35,19 @@ ema_target = st.sidebar.radio(
 )
 
 # ==========================================
-# 2. DATA FETCHER (LOCAL CSV METHOD)
+# 2. DATA FETCHER (DIRECT WEB SCRAPER)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    filename = sector_options.get(sector_name)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    url = sector_options.get(sector_name)
+    
     try:
-        df = pd.read_csv(filename)
+        response = requests.get(url, headers=headers, timeout=15)
+        df = pd.read_csv(io.StringIO(response.text))
         return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
-    except FileNotFoundError:
-        st.sidebar.error(f"⚠️ Missing file: {filename}. Please download it from NSE and upload it to your GitHub repository.")
-        return []
     except Exception as e:
-        st.sidebar.error(f"⚠️ Error reading {filename}: {e}")
+        st.sidebar.error(f"Failed to fetch live index list from NSE: {e}")
         return []
 
 # ==========================================
@@ -169,9 +171,9 @@ if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     
     if not ticker_list:
-        st.error("⚠️ Cannot proceed. Make sure your CSV files are uploaded to GitHub.")
+        st.error("Failed to load ticker list. The NSE might be temporarily blocking the request.")
     else:
-        st.info(f"Hunting for Demand Zones with Dry Volume & EMA Confluence...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Demand Zones & EMA Confluence...")
         
         period_map = {"1d": "2y", "1wk": "5y", "1mo": "10y"}
         fetch_period = period_map.get(timeframe, "2y")
