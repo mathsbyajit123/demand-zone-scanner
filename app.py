@@ -16,13 +16,14 @@ st.markdown("Scans for pullbacks into 1-2 candle base zones where retracement vo
 
 st.sidebar.header("⚙️ Scanner Settings")
 
+# NEW DATA SOURCE: niftyindices.com (Bypasses the main NSE firewall)
 sector_options = {
-    "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
-    "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
-    "Nifty Midcap 100": "https://archives.nseindia.com/content/indices/ind_niftymidcap100list.csv",
-    "Nifty Bank": "https://archives.nseindia.com/content/indices/ind_niftybanklist.csv",
-    "Nifty IT": "https://archives.nseindia.com/content/indices/ind_niftyitlist.csv",
-    "Nifty Auto": "https://archives.nseindia.com/content/indices/ind_niftyautolist.csv"
+    "Nifty 50": "https://niftyindices.com/IndexConstituent/ind_nifty50list.csv",
+    "Nifty 500": "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
+    "Nifty Midcap 100": "https://niftyindices.com/IndexConstituent/ind_niftymidcap100list.csv",
+    "Nifty Bank": "https://niftyindices.com/IndexConstituent/ind_niftybanklist.csv",
+    "Nifty IT": "https://niftyindices.com/IndexConstituent/ind_niftyitlist.csv",
+    "Nifty Auto": "https://niftyindices.com/IndexConstituent/ind_niftyautolist.csv"
 }
 selected_sector = st.sidebar.selectbox("Select Sector / Index", list(sector_options.keys()))
 
@@ -34,34 +35,34 @@ ema_target = st.sidebar.radio(
 )
 
 # ==========================================
-# 2. DATA FETCHER (CLOUD PROXY BYPASS)
+# 2. DATA FETCHER (NIFTY INDICES API)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
     url = sector_options.get(sector_name)
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    }
     
-    # ATTEMPT 1: Direct NSE Connection (Works perfectly on local home WiFi)
     try:
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             df = pd.read_csv(io.StringIO(response.text))
-            return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
-    except:
-        pass
-        
-    # ATTEMPT 2: Cloud Bypass Proxy (Tricks the NSE if Render/GitHub is blocked)
-    try:
-        proxy_url = f"https://api.allorigins.win/raw?url={url}"
-        response = requests.get(proxy_url, timeout=15)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text))
-            return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
+            
+            # Identify the column containing the stock symbol dynamically
+            symbol_col = next((col for col in df.columns if 'Symbol' in col or 'SYMBOL' in col), None)
+            
+            if symbol_col:
+                return [str(symbol).strip() + ".NS" for symbol in df[symbol_col]]
+            else:
+                st.sidebar.error("Could not find Symbol column in data.")
+                return []
+        else:
+            st.sidebar.error(f"Failed to fetch data. Status Code: {response.status_code}")
+            return []
     except Exception as e:
-        pass
-        
-    st.sidebar.error("⚠️ The NSE Firewall completely blocked the request. Try again in 5 minutes.")
-    return []
+        st.sidebar.error(f"Error connecting to Nifty Indices: {e}")
+        return []
 
 # ==========================================
 # 3. CORE LOGIC: ZONES, VOLUME & EMA
@@ -181,7 +182,7 @@ def check_setup(df, ema_choice):
 # ==========================================
 if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
     
-    with st.spinner(f"Connecting to NSE servers to fetch {selected_sector}..."):
+    with st.spinner(f"Connecting to Nifty Indices to fetch {selected_sector}..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
