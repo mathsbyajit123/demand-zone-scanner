@@ -16,7 +16,6 @@ st.markdown("Scans for pullbacks into 1-2 candle base zones where retracement vo
 
 st.sidebar.header("⚙️ Scanner Settings")
 
-# Direct NSE Web URLs (NO LOCAL CSV REQUIRED)
 sector_options = {
     "Nifty 50": "https://archives.nseindia.com/content/indices/ind_nifty50list.csv",
     "Nifty 500": "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
@@ -35,20 +34,34 @@ ema_target = st.sidebar.radio(
 )
 
 # ==========================================
-# 2. DATA FETCHER (DIRECT WEB SCRAPER)
+# 2. DATA FETCHER (CLOUD PROXY BYPASS)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     url = sector_options.get(sector_name)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
+    # ATTEMPT 1: Direct NSE Connection (Works perfectly on local home WiFi)
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        df = pd.read_csv(io.StringIO(response.text))
-        return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text))
+            return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
+    except:
+        pass
+        
+    # ATTEMPT 2: Cloud Bypass Proxy (Tricks the NSE if Render/GitHub is blocked)
+    try:
+        proxy_url = f"https://api.allorigins.win/raw?url={url}"
+        response = requests.get(proxy_url, timeout=15)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text))
+            return [str(symbol).strip() + ".NS" for symbol in df['Symbol']]
     except Exception as e:
-        st.sidebar.error(f"Failed to fetch live index list from NSE: {e}")
-        return []
+        pass
+        
+    st.sidebar.error("⚠️ The NSE Firewall completely blocked the request. Try again in 5 minutes.")
+    return []
 
 # ==========================================
 # 3. CORE LOGIC: ZONES, VOLUME & EMA
@@ -168,12 +181,11 @@ def check_setup(df, ema_choice):
 # ==========================================
 if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
     
-    ticker_list = get_index_tickers(selected_sector)
+    with st.spinner(f"Connecting to NSE servers to fetch {selected_sector}..."):
+        ticker_list = get_index_tickers(selected_sector)
     
-    if not ticker_list:
-        st.error("Failed to load ticker list. The NSE might be temporarily blocking the request.")
-    else:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Demand Zones & EMA Confluence...")
+    if ticker_list:
+        st.info(f"Successfully loaded {len(ticker_list)} stocks. Hunting for Demand Zones & EMA Confluence...")
         
         period_map = {"1d": "2y", "1wk": "5y", "1mo": "10y"}
         fetch_period = period_map.get(timeframe, "2y")
