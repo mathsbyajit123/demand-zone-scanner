@@ -35,7 +35,9 @@ direction = st.sidebar.radio(
     ("🟢 Bullish (Demand Zone)", "🔴 Bearish (Supply Zone)")
 )
 
-num_base = st.sidebar.slider("Number of Base Candles", min_value=1, max_value=6, value=2)
+# CHANGED: Base Candles is now a Range Slider (Min - Max)
+min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", 
+                                       min_value=1, max_value=6, value=(1, 4))
 
 base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=20, max_value=80, value=50, 
                                   help="50% means the body takes up max half of the candle's total high-to-low range.")
@@ -82,7 +84,7 @@ def get_index_tickers(sector_name):
 # ==========================================
 # 3. CORE LOGIC: STRICT ZONE CHECK & VOLUME
 # ==========================================
-def check_setup(df, dir_choice, bases, min_leg, max_leg, body_pct):
+def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
     df = df.dropna()
     if len(df) > 0: df = df.iloc[:-1] # Ignore current unclosed candle
     if len(df) < 50: return None
@@ -93,69 +95,76 @@ def check_setup(df, dir_choice, bases, min_leg, max_leg, body_pct):
     is_bullish = "Bullish" in dir_choice
     zones = []
     
-    # Scan through history for the exact pattern match
-    for i in range(10, len(df) - bases - max_leg - 1):
+    # Scan through history for the pattern matches
+    for i in range(10, len(df) - max_b - max_leg - 1):
         
-        # 1. Check if the sequence has the exact number of Base Candles
-        base_valid = True
-        for b in range(bases):
-            idx = i + b
-            if df['Range'].iloc[idx] == 0: 
-                base_valid = False
-                break
+        setup_found = False
+        
+        # Test every possible base length from Min to Max
+        for bases in range(min_b, max_b + 1):
+            if setup_found: break # If we already found a valid zone here, skip checking larger bases
             
-            candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
-            if candle_body_pct > body_pct:
-                base_valid = False
-                break
+            # 1. Check if the sequence has exactly `bases` number of Base Candles
+            base_valid = True
+            for b in range(bases):
+                idx = i + b
+                if df['Range'].iloc[idx] == 0: 
+                    base_valid = False
+                    break
                 
-        if not base_valid:
-            continue
-            
-        # 2. Check for dynamic Leg-out streak (Min to Max)
-        current_streak = 0
-        vols = []
-        
-        for L in range(max_leg):
-            idx = i + bases + L
-            is_green = df['Close'].iloc[idx] > df['Open'].iloc[idx]
-            
-            if is_bullish and is_green:
-                current_streak += 1
-                vols.append(df['Volume'].iloc[idx])
-            elif not is_bullish and not is_green:
-                current_streak += 1
-                vols.append(df['Volume'].iloc[idx])
-            else:
-                break
-                
-        if current_streak >= min_leg:
-            actual_leg_len = min(current_streak, max_leg)
-            avg_breakout_vol = sum(vols[:actual_leg_len]) / actual_leg_len
-        else:
-            continue
-            
-        # 3. Calculate Zone and verify true breakout
-        base_slice = df.iloc[i : i + bases]
-        final_leg_close = df['Close'].iloc[i + bases + actual_leg_len - 1]
-        
-        if is_bullish:
-            proximal = base_slice['High'].max()
-            distal = base_slice['Low'].min()
-            if final_leg_close <= proximal: 
-                continue 
-        else:
-            proximal = base_slice['Low'].min()
-            distal = base_slice['High'].max()
-            if final_leg_close >= proximal: 
+                candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
+                if candle_body_pct > body_pct:
+                    base_valid = False
+                    break
+                    
+            if not base_valid:
                 continue
                 
-        zones.append({
-            'proximal': proximal,
-            'distal': distal,
-            'breakout_vol': avg_breakout_vol,
-            'index': i + bases + actual_leg_len - 1
-        })
+            # 2. Check for dynamic Leg-out streak (Min to Max)
+            current_streak = 0
+            vols = []
+            
+            for L in range(max_leg):
+                idx = i + bases + L
+                is_green = df['Close'].iloc[idx] > df['Open'].iloc[idx]
+                
+                if is_bullish and is_green:
+                    current_streak += 1
+                    vols.append(df['Volume'].iloc[idx])
+                elif not is_bullish and not is_green:
+                    current_streak += 1
+                    vols.append(df['Volume'].iloc[idx])
+                else:
+                    break
+                    
+            if current_streak >= min_leg:
+                actual_leg_len = min(current_streak, max_leg)
+                avg_breakout_vol = sum(vols[:actual_leg_len]) / actual_leg_len
+            else:
+                continue
+                
+            # 3. Calculate Zone and verify true breakout
+            base_slice = df.iloc[i : i + bases]
+            final_leg_close = df['Close'].iloc[i + bases + actual_leg_len - 1]
+            
+            if is_bullish:
+                proximal = base_slice['High'].max()
+                distal = base_slice['Low'].min()
+                if final_leg_close <= proximal: 
+                    continue 
+            else:
+                proximal = base_slice['Low'].min()
+                distal = base_slice['High'].max()
+                if final_leg_close >= proximal: 
+                    continue
+                    
+            zones.append({
+                'proximal': proximal,
+                'distal': distal,
+                'breakout_vol': avg_breakout_vol,
+                'index': i + bases + actual_leg_len - 1
+            })
+            setup_found = True # Lock in the zone so we don't double count overlapping patterns
 
     # Validate Zones: Must not be broken by price yet
     valid_zones = []
@@ -209,7 +218,7 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for strictly 'In The Zone' setups...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {min_base}-{max_base} Base, {min_legout}-{max_legout} Legout {direction} Zones...")
         
         if timeframe == '1h':
             fetch_period = "730d"
@@ -230,7 +239,7 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=timeframe)
                 if not df.empty:
-                    setup = check_setup(df, direction, num_base, min_legout, max_legout, base_body_pct)
+                    setup = check_setup(df, direction, min_base, max_base, min_legout, max_legout, base_body_pct)
                     if setup:
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
