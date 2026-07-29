@@ -11,8 +11,8 @@ warnings.filterwarnings('ignore')
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
 st.set_page_config(page_title="Custom S&D Scanner", layout="wide")
-st.title("🎯 Strict 'In The Zone' S&D Scanner")
-st.markdown("Scans for stocks where the current price is STRICTLY INSIDE a valid Base/Boring Candle Zone.")
+st.title("🎯 Strict 'In The Zone' S&D Scanner (LIVE MARKET)")
+st.markdown("Scans for stocks where the LIVE price has pulled back and is STRICTLY INSIDE a previously made Base Zone.")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -35,7 +35,6 @@ direction = st.sidebar.radio(
     ("🟢 Bullish (Demand Zone)", "🔴 Bearish (Supply Zone)")
 )
 
-# CHANGED: Base Candles is now a Range Slider (Min - Max)
 min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", 
                                        min_value=1, max_value=6, value=(1, 4))
 
@@ -86,7 +85,8 @@ def get_index_tickers(sector_name):
 # ==========================================
 def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
     df = df.dropna()
-    if len(df) > 0: df = df.iloc[:-1] # Ignore current unclosed candle
+    
+    # CRITICAL FIX: Removed `df = df.iloc[:-1]` so the scanner evaluates the LIVE unclosed candle.
     if len(df) < 50: return None
         
     df['Range'] = df['High'] - df['Low']
@@ -100,11 +100,10 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
         
         setup_found = False
         
-        # Test every possible base length from Min to Max
         for bases in range(min_b, max_b + 1):
-            if setup_found: break # If we already found a valid zone here, skip checking larger bases
+            if setup_found: break 
             
-            # 1. Check if the sequence has exactly `bases` number of Base Candles
+            # 1. Base Candle Verification
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -120,7 +119,7 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
             if not base_valid:
                 continue
                 
-            # 2. Check for dynamic Leg-out streak (Min to Max)
+            # 2. Leg-out Streak Verification
             current_streak = 0
             vols = []
             
@@ -143,7 +142,7 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
             else:
                 continue
                 
-            # 3. Calculate Zone and verify true breakout
+            # 3. Calculate Zone Entry & SL
             base_slice = df.iloc[i : i + bases]
             final_leg_close = df['Close'].iloc[i + bases + actual_leg_len - 1]
             
@@ -164,43 +163,49 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
                 'breakout_vol': avg_breakout_vol,
                 'index': i + bases + actual_leg_len - 1
             })
-            setup_found = True # Lock in the zone so we don't double count overlapping patterns
+            setup_found = True 
 
-    # Validate Zones: Must not be broken by price yet
+    # Validate Zones: True Retracement (Must have departed the zone) & Not Broken
     valid_zones = []
     for z in zones:
-        future_data = df.iloc[z['index']+2 : ]
+        future_data = df.iloc[z['index']+1 : -1] # Look at all candles between breakout and today
         if len(future_data) == 0: continue
         
         if is_bullish:
+            # Must have departed at least 1.5% away from zone
+            if future_data['High'].max() < (z['proximal'] * 1.015):
+                continue
+            # Must not have closed below stop loss
             if not (future_data['Close'] < z['distal']).any():
                 valid_zones.append(z)
         else:
+            if future_data['Low'].min() > (z['proximal'] * 0.985):
+                continue
             if not (future_data['Close'] > z['distal']).any():
                 valid_zones.append(z)
 
     if not valid_zones: return None
     
-    current = df.iloc[-1]
+    current = df.iloc[-1] # The LIVE market price right now
     
-    # 4. Check ALL valid zones to see if price is STRICTLY INSIDE one right now
-    for z in reversed(valid_zones): # Check from newest zone to oldest
+    # 4. Check ALL valid zones to see if the LIVE price is STRICTLY INSIDE one right now
+    for z in reversed(valid_zones): 
         
         volume_is_less = current['Volume'] < z['breakout_vol']
         in_zone = False
         
         if is_bullish:
-            # STRICT DEMAND: Low is below Proximal (entry) AND Close is above Distal (stop loss)
+            # STRICT DEMAND: Live Low touched Proximal AND Live Close is still above Distal
             in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
         else:
-            # STRICT SUPPLY: High is above Proximal (entry) AND Close is below Distal (stop loss)
+            # STRICT SUPPLY: Live High touched Proximal AND Live Close is still below Distal
             in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
 
         if in_zone and volume_is_less:
             risk_pct = (abs(z['proximal'] - z['distal']) / z['proximal']) * 100
             
             return {
-                "Price": round(current['Close'], 2),
+                "Live Price": round(current['Close'], 2),
                 "Zone Entry": round(z['proximal'], 2),
                 "Stop Loss": round(z['distal'], 2),
                 "Zone Risk": f"{risk_pct:.2f}%",
@@ -244,7 +249,7 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
                             "Ticker": setup['Ticker'],
-                            "Price": setup['Price'],
+                            "Live Price": setup['Live Price'],
                             "Zone Entry": setup['Zone Entry'],
                             "Stop Loss": setup['Stop Loss'],
                             "Risk %": setup['Zone Risk'],
@@ -261,11 +266,11 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 {direction} 'In Zone' Results ({timeframe.upper()})")
+        st.subheader(f"📊 LIVE {direction} 'In Zone' Results ({timeframe.upper()})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. The stocks listed are currently sitting strictly inside a valid zone on low volume.")
+            st.success("Target acquired. The stocks listed have their live market price sitting strictly inside a valid zone on low volume.")
         else:
             st.warning(f"No stocks found sitting exactly inside a zone matching your criteria right now.")
