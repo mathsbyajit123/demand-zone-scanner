@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Custom S&D Scanner", layout="wide")
-st.title("🎯 Strict 'In The Zone' S&D Scanner (LIVE MARKET)")
-st.markdown("Scans for stocks where the LIVE price has pulled back and is STRICTLY INSIDE a previously made Base Zone.")
+st.set_page_config(page_title="Advanced Structure S&D Scanner", layout="wide")
+st.title("🎯 Trend & Structure S&D Scanner (LIVE)")
+st.markdown("Scans for stocks strictly in-trend, requiring a <40% Boring Candle, Break of Structure (BOS), and a low-volume retracement into the zone.")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -31,15 +31,15 @@ timeframe = st.sidebar.selectbox("Timeframe", ["1h", "1d", "1wk", "1mo"], index=
 st.sidebar.header("🎯 Pattern Settings")
 
 direction = st.sidebar.radio(
-    "Scan Direction",
-    ("🟢 Bullish (Demand Zone)", "🔴 Bearish (Supply Zone)")
+    "Scan Direction & Trend Filter",
+    ("🟢 Demand (Only in Uptrend)", "🔴 Supply (Only in Downtrend)")
 )
 
 min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", 
-                                       min_value=1, max_value=6, value=(1, 4))
+                                       min_value=1, max_value=3, value=(1, 3))
 
-base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=20, max_value=80, value=50, 
-                                  help="50% means the body takes up max half of the candle's total high-to-low range.")
+base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=10, max_value=50, value=40, 
+                                  help="Set to 40%. The body takes up max 40% of the candle's total high-to-low range.")
 
 min_legout, max_legout = st.sidebar.slider("Number of Leg-out Candles (Min - Max)", 
                                            min_value=1, max_value=6, value=(1, 4))
@@ -81,29 +81,43 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: STRICT ZONE CHECK & VOLUME
+# 3. CORE LOGIC: TREND, BOS, & STRICT ZONE
 # ==========================================
 def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
     df = df.dropna()
     
-    # CRITICAL FIX: Removed `df = df.iloc[:-1]` so the scanner evaluates the LIVE unclosed candle.
-    if len(df) < 50: return None
+    if len(df) < 200: return None # Need 200 periods for the 200 EMA Trend Filter
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
     
-    is_bullish = "Bullish" in dir_choice
+    # Calculate Trend EMAs
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    
+    is_bullish = "Demand" in dir_choice
+    current = df.iloc[-1] # The LIVE market price right now
+    
+    # --- MACRO TREND FILTER ---
+    # If looking for Demand, stock MUST be in an uptrend (Price > 50 EMA > 200 EMA)
+    if is_bullish:
+        if current['Close'] < current['EMA_50'] or current['EMA_50'] < current['EMA_200']:
+            return None 
+    # If looking for Supply, stock MUST be in a downtrend (Price < 50 EMA < 200 EMA)
+    else:
+        if current['Close'] > current['EMA_50'] or current['EMA_50'] > current['EMA_200']:
+            return None 
+
     zones = []
     
     # Scan through history for the pattern matches
     for i in range(10, len(df) - max_b - max_leg - 1):
-        
         setup_found = False
         
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # 1. Base Candle Verification
+            # 1. Base Candle Verification (< 40% Body Rule)
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -142,19 +156,29 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
             else:
                 continue
                 
-            # 3. Calculate Zone Entry & SL
+            # 3. Calculate Zone & Break of Structure (BOS)
             base_slice = df.iloc[i : i + bases]
             final_leg_close = df['Close'].iloc[i + bases + actual_leg_len - 1]
             
             if is_bullish:
                 proximal = base_slice['High'].max()
                 distal = base_slice['Low'].min()
-                if final_leg_close <= proximal: 
+                
+                # BOS RULE: Break above the recent local swing high (Drop into the Base)
+                local_swing_high = df['High'].iloc[max(0, i-3):i].max() if i > 3 else proximal
+                bos_level = max(proximal, local_swing_high)
+                
+                if final_leg_close <= bos_level: 
                     continue 
             else:
                 proximal = base_slice['Low'].min()
                 distal = base_slice['High'].max()
-                if final_leg_close >= proximal: 
+                
+                # BOS RULE: Break below the recent local swing low (Rally into the Base)
+                local_swing_low = df['Low'].iloc[max(0, i-3):i].min() if i > 3 else proximal
+                bos_level = min(proximal, local_swing_low)
+                
+                if final_leg_close >= bos_level: 
                     continue
                     
             zones.append({
@@ -168,25 +192,19 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
     # Validate Zones: True Retracement (Must have departed the zone) & Not Broken
     valid_zones = []
     for z in zones:
-        future_data = df.iloc[z['index']+1 : -1] # Look at all candles between breakout and today
+        future_data = df.iloc[z['index']+1 : -1] 
         if len(future_data) == 0: continue
         
         if is_bullish:
-            # Must have departed at least 1.5% away from zone
-            if future_data['High'].max() < (z['proximal'] * 1.015):
-                continue
-            # Must not have closed below stop loss
+            if future_data['High'].max() < (z['proximal'] * 1.015): continue
             if not (future_data['Close'] < z['distal']).any():
                 valid_zones.append(z)
         else:
-            if future_data['Low'].min() > (z['proximal'] * 0.985):
-                continue
+            if future_data['Low'].min() > (z['proximal'] * 0.985): continue
             if not (future_data['Close'] > z['distal']).any():
                 valid_zones.append(z)
 
     if not valid_zones: return None
-    
-    current = df.iloc[-1] # The LIVE market price right now
     
     # 4. Check ALL valid zones to see if the LIVE price is STRICTLY INSIDE one right now
     for z in reversed(valid_zones): 
@@ -209,7 +227,8 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
                 "Zone Entry": round(z['proximal'], 2),
                 "Stop Loss": round(z['distal'], 2),
                 "Zone Risk": f"{risk_pct:.2f}%",
-                "Vol Dry-Up": "✅ Yes"
+                "Vol Dry-Up": "✅ Yes",
+                "Trend": "Uptrend" if is_bullish else "Downtrend"
             }
             
     return None
@@ -217,13 +236,13 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Start Custom Scan", type="primary"):
+if st.sidebar.button(f"Start Structured Scan", type="primary"):
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {min_base}-{max_base} Base, {min_legout}-{max_legout} Legout {direction} Zones...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Structure Breaks & Low Volume Pullbacks...")
         
         if timeframe == '1h':
             fetch_period = "730d"
@@ -249,6 +268,7 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
                             "Ticker": setup['Ticker'],
+                            "Trend": setup['Trend'],
                             "Live Price": setup['Live Price'],
                             "Zone Entry": setup['Zone Entry'],
                             "Stop Loss": setup['Stop Loss'],
@@ -266,11 +286,11 @@ if st.sidebar.button(f"Start Custom Scan", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 LIVE {direction} 'In Zone' Results ({timeframe.upper()})")
+        st.subheader(f"📊 LIVE {direction[:2]} 'In Zone' Results ({timeframe.upper()})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. The stocks listed have their live market price sitting strictly inside a valid zone on low volume.")
+            st.success("Target acquired. Stocks listed are actively trading inside a Trend-Aligned, BOS-Confirmed zone on lower volume.")
         else:
-            st.warning(f"No stocks found sitting exactly inside a zone matching your criteria right now.")
+            st.warning(f"No stocks found. The market is either not aligned with the trend, or no pullbacks match the strict BOS criteria right now.")
