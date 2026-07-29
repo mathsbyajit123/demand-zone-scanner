@@ -10,11 +10,11 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Strict S&D Scanner", layout="wide")
-st.title("🎯 Strict Demand Zone & Volume Scanner")
-st.markdown("Aggressively filters out 'fake' zones by demanding explosive leg-outs, true whitespace departure, and volume dry-ups.")
+st.set_page_config(page_title="Custom S&D Scanner", layout="wide")
+st.title("🎯 Fully Custom Supply & Demand Scanner")
+st.markdown("Scan exactly the way you trade. Define your own Base and Leg-Out rules.")
 
-st.sidebar.header("⚙️ Scanner Settings")
+st.sidebar.header("⚙️ Market Settings")
 
 sector_options = [
     "Nifty 50",
@@ -25,7 +25,25 @@ sector_options = [
     "Nifty Auto"
 ]
 selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options)
-timeframe = st.sidebar.selectbox("Timeframe", ["1d", "1wk", "1mo"], index=0)
+
+# Added 1h timeframe
+timeframe = st.sidebar.selectbox("Timeframe", ["1h", "1d", "1wk", "1mo"], index=1)
+
+st.sidebar.header("🎯 Pattern Settings")
+
+direction = st.sidebar.radio(
+    "Scan Direction",
+    ("🟢 Bullish (Demand Zone)", "🔴 Bearish (Supply Zone)")
+)
+
+num_base = st.sidebar.slider("Number of Base Candles", min_value=1, max_value=6, value=2)
+
+# Slider to control how "small" the base candle has to be (e.g., 50% means body is half the total range)
+base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=20, max_value=80, value=50, 
+                                  help="50% means the body takes up max half of the candle's total high-to-low range.")
+
+num_legout = st.sidebar.slider("Number of Leg-out Candles", min_value=1, max_value=6, value=1)
+
 
 # ==========================================
 # 2. DATA FETCHER (FIREWALL-PROOF)
@@ -63,97 +81,120 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: STRICT ZONES & WHITESPACE
+# 3. CORE LOGIC: CUSTOM PATTERNS & VOLUME
 # ==========================================
-def check_setup(df):
+def check_setup(df, dir_choice, bases, legouts, body_pct):
     df = df.dropna()
-    if len(df) > 0: df = df.iloc[:-1] 
+    if len(df) > 0: df = df.iloc[:-1] # Ignore current unclosed candle
     if len(df) < 50: return None
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
     
-    # 1. Stricter Boring Candle (Max 45% body)
-    df['Is_Boring'] = df['Body'] <= (0.45 * df['Range'])
-    
-    # 2. Volatility Filter (Average True Range over 14 periods)
-    df['ATR'] = df['Range'].rolling(14).mean()
-    
-    # 3. Stricter Leg-Out (Green, Body > 60% of its range, and larger than current market ATR)
-    df['Is_Strong_Green'] = (df['Close'] > df['Open']) & \
-                            (df['Body'] > (0.60 * df['Range'])) & \
-                            (df['Body'] > (df['ATR'] * 1.2))
-
+    is_bullish = "Bullish" in dir_choice
     zones = []
     
-    for i in range(20, len(df) - 2):
+    total_len = bases + legouts
+    
+    # Scan through history for the exact pattern match
+    for i in range(10, len(df) - total_len - 1):
         
-        # PATTERN 1: 1-Candle Base
-        if df['Is_Boring'].iloc[i] and df['Is_Strong_Green'].iloc[i+1]:
-            # EXPLOSIVE RULE: Leg-out body must absolutely dwarf the boring candle's entire range
-            if df['Close'].iloc[i+1] > df['High'].iloc[i] and df['Body'].iloc[i+1] > df['Range'].iloc[i]: 
-                zones.append({
-                    'type': '1-Base Demand',
-                    'proximal': df['High'].iloc[i], 
-                    'distal': df['Low'].iloc[i],    
-                    'breakout_vol': df['Volume'].iloc[i+1],
-                    'index': i
-                })
-                
-        # PATTERN 2: 2-Candle Base
-        elif df['Is_Boring'].iloc[i-1] and df['Is_Boring'].iloc[i] and df['Is_Strong_Green'].iloc[i+1]:
-            highest_base = max(df['High'].iloc[i], df['High'].iloc[i-1])
-            lowest_base = min(df['Low'].iloc[i], df['Low'].iloc[i-1])
-            max_base_range = max(df['Range'].iloc[i], df['Range'].iloc[i-1])
+        # 1. Check if the sequence has the exact number of Base Candles
+        base_valid = True
+        for b in range(bases):
+            idx = i + b
+            # Prevent divide by zero if range is 0
+            if df['Range'].iloc[idx] == 0: 
+                base_valid = False
+                break
             
-            # EXPLOSIVE RULE: Leg-out body must be larger than the biggest base candle
-            if df['Close'].iloc[i+1] > highest_base and df['Body'].iloc[i+1] > max_base_range:
-                zones.append({
-                    'type': '2-Base Demand',
-                    'proximal': highest_base,
-                    'distal': lowest_base,
-                    'breakout_vol': df['Volume'].iloc[i+1], 
-                    'index': i
-                })
+            candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
+            if candle_body_pct > body_pct:
+                base_valid = False
+                break
+                
+        if not base_valid:
+            continue
+            
+        # 2. Check if the sequence has the exact number of Leg-out Candles
+        legout_valid = True
+        legout_vols = []
+        for L in range(legouts):
+            idx = i + bases + L
+            is_green = df['Close'].iloc[idx] > df['Open'].iloc[idx]
+            
+            if is_bullish and not is_green:
+                legout_valid = False
+                break
+            if not is_bullish and is_green:
+                legout_valid = False
+                break
+                
+            legout_vols.append(df['Volume'].iloc[idx])
+            
+        if not legout_valid:
+            continue
+            
+        # 3. Calculate Zone and verify true breakout
+        base_slice = df.iloc[i : i + bases]
+        final_leg_close = df['Close'].iloc[i + bases + legouts - 1]
+        
+        if is_bullish:
+            proximal = base_slice['High'].max()
+            distal = base_slice['Low'].min()
+            if final_leg_close <= proximal: # Breakout must clear the highest base point
+                continue 
+        else:
+            proximal = base_slice['Low'].min()
+            distal = base_slice['High'].max()
+            if final_leg_close >= proximal: # Breakdown must clear the lowest base point
+                continue
+                
+        avg_breakout_vol = sum(legout_vols) / len(legout_vols)
+        
+        zones.append({
+            'proximal': proximal,
+            'distal': distal,
+            'breakout_vol': avg_breakout_vol,
+            'index': i + bases + legouts - 1
+        })
 
+    # Validate Zones: Make sure price hasn't already broken the stop loss level
     valid_zones = []
     for z in zones:
         future_data = df.iloc[z['index']+2 : ]
+        if len(future_data) == 0: continue
         
-        # Must have enough data to form a real pullback
-        if len(future_data) < 3: 
-            continue
-            
-        # DEPARTURE RULE: Price must have traveled at least 3% above the proximal line before returning
-        max_reach = future_data['High'].max()
-        if max_reach < (z['proximal'] * 1.03):
-            continue
-            
-        # INVALIDATION RULE: Must not have closed below distal
-        if not (future_data['Close'] < z['distal']).any():
-            valid_zones.append(z)
+        if is_bullish:
+            if not (future_data['Close'] < z['distal']).any():
+                valid_zones.append(z)
+        else:
+            if not (future_data['Close'] > z['distal']).any():
+                valid_zones.append(z)
 
     if not valid_zones: return None
     
-    # Check the most recent validated zone
+    # Check the most recent valid zone against today's price
     latest_zone = valid_zones[-1] 
     current = df.iloc[-1]
     
-    # ENTRY RULE: Price is within 1.5% of the proximal line
-    near_zone = current['Low'] <= (latest_zone['proximal'] * 1.015)
-    holding_zone = current['Close'] >= latest_zone['distal']
-    
-    # VOLUME RULE: Today's pullback volume is strictly less than the breakout day volume
+    # 4. Retracement Rule & Volume Rule
     volume_is_less = current['Volume'] < latest_zone['breakout_vol']
+    
+    if is_bullish:
+        # Near Demand: Low is within 1.5% above proximal, Close is strictly above distal
+        near_zone = current['Low'] <= (latest_zone['proximal'] * 1.015) and current['Close'] >= latest_zone['distal']
+    else:
+        # Near Supply: High is within 1.5% below proximal, Close is strictly below distal
+        near_zone = current['High'] >= (latest_zone['proximal'] * 0.985) and current['Close'] <= latest_zone['distal']
 
-    if near_zone and holding_zone and volume_is_less:
-        risk_pct = ((latest_zone['proximal'] - latest_zone['distal']) / latest_zone['proximal']) * 100
+    if near_zone and volume_is_less:
+        risk_pct = (abs(latest_zone['proximal'] - latest_zone['distal']) / latest_zone['proximal']) * 100
         
         return {
-            "Zone Type": latest_zone['type'],
-            "Current Price": round(current['Close'], 2),
-            "Proximal (Entry)": round(latest_zone['proximal'], 2),
-            "Distal (SL)": round(latest_zone['distal'], 2),
+            "Price": round(current['Close'], 2),
+            "Zone Entry": round(latest_zone['proximal'], 2),
+            "Stop Loss": round(latest_zone['distal'], 2),
             "Zone Risk": f"{risk_pct:.2f}%",
             "Vol Dry-Up": "✅ Yes"
         }
@@ -163,16 +204,23 @@ def check_setup(df):
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
+if st.sidebar.button(f"Start Custom Scan", type="primary"):
     
-    with st.spinner(f"Fetching {selected_sector} list from secure mirrors..."):
+    with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Strict Demand Zones...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {num_base}-Base, {num_legout}-Legout {direction} Zones...")
         
-        period_map = {"1d": "1y", "1wk": "3y", "1mo": "10y"}
-        fetch_period = period_map.get(timeframe, "1y")
+        # yfinance limits 1h data to max 730 days. Auto-adjusting periods to prevent crashes.
+        if timeframe == '1h':
+            fetch_period = "730d"
+        elif timeframe == '1d':
+            fetch_period = "2y"
+        elif timeframe == '1wk':
+            fetch_period = "5y"
+        else:
+            fetch_period = "10y"
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -184,17 +232,16 @@ if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=timeframe)
                 if not df.empty:
-                    setup = check_setup(df)
+                    setup = check_setup(df, direction, num_base, num_legout, base_body_pct)
                     if setup:
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
                             "Ticker": setup['Ticker'],
-                            "Zone Type": setup['Zone Type'],
-                            "Price": setup['Current Price'],
-                            "Entry Level": setup['Proximal (Entry)'],
-                            "Stop Loss": setup['Distal (SL)'],
+                            "Price": setup['Price'],
+                            "Zone Entry": setup['Zone Entry'],
+                            "Stop Loss": setup['Stop Loss'],
                             "Risk %": setup['Zone Risk'],
-                            "Volume Check": setup['Volume Check']
+                            "Volume Check": setup['Vol Dry-Up']
                         })
             except:
                 pass
@@ -207,11 +254,11 @@ if st.sidebar.button(f"Scan {selected_sector}", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 {selected_sector} Strict S&D Results ({timeframe.upper()})")
+        st.subheader(f"📊 {direction} Results ({timeframe.upper()})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. Stocks listed have retraced to a validated, explosive Boring Candle Base on lower volume.")
+            st.success("Target acquired. Stocks listed match your exact Base and Leg-out rules on lower retracement volume.")
         else:
-            st.warning(f"No stocks found. None are currently pulling back to a strictly validated base zone.")
+            st.warning(f"No stocks found pulling back to a zone matching your specific criteria right now.")
