@@ -91,7 +91,7 @@ def get_index_tickers(sector_name):
 # ==========================================
 def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
     df = df.dropna()
-    if len(df) < 200: return None # Need 200 periods for the 200 EMA
+    if len(df) < 200: return None 
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
@@ -99,18 +99,16 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
     is_bullish = "Demand" in dir_choice
-    current = df.iloc[-1] # LIVE market price
+    current = df.iloc[-1] 
     
     zones = []
     
-    # Scan through history for the pattern matches
     for i in range(10, len(df) - max_b - 2):
         setup_found = False
         
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # 1. Base Candle Verification
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -126,7 +124,6 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
             if not base_valid:
                 continue
                 
-            # 2. Leg-out Verification
             leg_idx = i + bases
             is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
             leg_body_pct = (df['Body'].iloc[leg_idx] / df['Range'].iloc[leg_idx]) * 100 if df['Range'].iloc[leg_idx] > 0 else 0
@@ -136,7 +133,6 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
             else:
                 if is_green or leg_body_pct < 50: continue
                 
-            # 3. Calculate Zone
             base_slice = df.iloc[i : i + bases]
             final_leg_close = df['Close'].iloc[leg_idx]
             
@@ -157,7 +153,6 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
             })
             setup_found = True 
 
-    # 4. Validate Zones: Must have reacted away previously, and not been broken yet
     valid_zones = []
     for z in zones:
         future_data = df.iloc[z['index']+1 : -1] 
@@ -174,7 +169,6 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
 
     if not valid_zones: return None
     
-    # 5. Check LIVE Price & EMA Confluence Rules
     for z in reversed(valid_zones): 
         
         live_ema_44 = current['EMA_44']
@@ -184,37 +178,43 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
         ema_44_confluence = True
         ema_200_confluence = True
         
-        # Determine which rules are active based on UI choice
         req_44 = "44 EMA" in trend_choice or "Both" in trend_choice
         req_200 = "200 EMA" in trend_choice or "Both" in trend_choice
         
         if is_bullish:
-            # In Zone?
-            in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
+            # STRICT ZONE PROXIMITY: Low must tap zone, Close must NOT be > 4% away from zone entry
+            low_tapped = current['Low'] <= (z['proximal'] * 1.01)
+            close_held = current['Close'] >= z['distal']
+            close_near = current['Close'] <= (z['proximal'] * 1.04) 
+            in_zone = low_tapped and close_held and close_near
             
             if req_44:
-                price_above_44 = current['Close'] > live_ema_44
+                # STRICT EMA PROXIMITY: Price must be at EMA (not 20% above), EMA must be at zone
+                price_near_44 = current['Close'] <= (live_ema_44 * 1.04)
+                price_above_44 = current['Close'] >= (live_ema_44 * 0.99)
                 ema_at_zone = (live_ema_44 >= z['distal'] * 0.98) and (live_ema_44 <= z['proximal'] * 1.02)
-                ema_44_confluence = price_above_44 and ema_at_zone
+                ema_44_confluence = price_above_44 and price_near_44 and ema_at_zone
                 
             if req_200:
-                # 44 EMA > 200 EMA and Price > 200 EMA
                 ema_200_confluence = (live_ema_44 > live_ema_200) and (current['Close'] > live_ema_200)
             
         else:
-            # In Zone?
-            in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
+            # STRICT ZONE PROXIMITY: High must tap zone, Close must NOT be > 4% below zone entry
+            high_tapped = current['High'] >= (z['proximal'] * 0.99)
+            close_held = current['Close'] <= z['distal']
+            close_near = current['Close'] >= (z['proximal'] * 0.96)
+            in_zone = high_tapped and close_held and close_near
             
             if req_44:
-                price_below_44 = current['Close'] < live_ema_44
+                # STRICT EMA PROXIMITY: Price must be at EMA (not 20% below), EMA must be at zone
+                price_near_44 = current['Close'] >= (live_ema_44 * 0.96)
+                price_below_44 = current['Close'] <= (live_ema_44 * 1.01)
                 ema_at_zone = (live_ema_44 <= z['distal'] * 1.02) and (live_ema_44 >= z['proximal'] * 0.98)
-                ema_44_confluence = price_below_44 and ema_at_zone
+                ema_44_confluence = price_below_44 and price_near_44 and ema_at_zone
                 
             if req_200:
-                # 44 EMA < 200 EMA and Price < 200 EMA
                 ema_200_confluence = (live_ema_44 < live_ema_200) and (current['Close'] < live_ema_200)
 
-        # Check Volume Dry Up
         volume_is_less = current['Volume'] < z['breakout_vol']
 
         if in_zone and ema_44_confluence and ema_200_confluence and volume_is_less:
