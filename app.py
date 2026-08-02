@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="S&D + 44/200 EMA Scanner", layout="wide")
-st.title("🎯 S&D + Dynamic Trend (44 & 200 EMA) Scanner")
-st.markdown("Scans for stocks retracing into a verified Boring Candle Zone, perfectly aligned with your chosen EMA confluence.")
+st.set_page_config(page_title="200 EMA Scanner", layout="wide")
+st.title("🎯 200 EMA Support Scanner")
+st.markdown("A clean, focused scanner that finds stocks currently touching or sitting right at the 200 EMA support line.")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -25,31 +25,17 @@ sector_options = [
     "Nifty Auto"
 ]
 selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options)
-timeframe = st.sidebar.selectbox("Timeframe", ["1h", "1d", "1wk", "1mo"], index=1)
 
-st.sidebar.header("🎯 Pattern Settings")
+timeframe_options = {
+    "1 Day": "1d",
+    "1 Week": "1wk",
+    "1 Month": "1mo"
+}
+selected_tf_label = st.sidebar.selectbox("Timeframe", list(timeframe_options.keys()))
+timeframe = timeframe_options[selected_tf_label]
 
-direction = st.sidebar.radio(
-    "Scan Direction",
-    ("🟢 Demand (Bullish)", "🔴 Supply (Bearish)")
-)
-
-min_base, max_base = st.sidebar.slider("Number of Base (Boring) Candles (Min - Max)", 
-                                       min_value=1, max_value=5, value=(1, 3))
-
-base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=60, value=40, 
-                                  help="40% means it's a true doji/boring candle (body is small compared to wicks).")
-
-st.sidebar.header("📈 Trend Filter Options")
-
-trend_option = st.sidebar.radio(
-    "Select EMA Confluence Rule",
-    (
-        "1. 44 EMA Support (Must be at Zone)", 
-        "2. Above 200 EMA (Macro Trend Only, 44 EMA anywhere)", 
-        "3. Both (44 EMA at Zone + Above 200 EMA)"
-    )
-)
+proximity_pct = st.sidebar.slider("Proximity to 200 EMA (%)", min_value=1.0, max_value=5.0, value=2.0, step=0.5,
+                                  help="How close the current price needs to be to the 200 EMA to be considered 'at support'.")
 
 # ==========================================
 # 2. DATA FETCHER (FIREWALL-PROOF)
@@ -87,170 +73,56 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: ZONES + 44/200 EMA + LIVE CHECK
+# 3. CORE LOGIC: 200 EMA SUPPORT
 # ==========================================
-def check_setup(df, dir_choice, min_b, max_b, body_pct, trend_choice):
+def check_200_ema(df, buffer_pct):
     df = df.dropna()
-    if len(df) < 200: return None 
+    
+    # We need at least 200 periods to calculate a 200 EMA accurately
+    if len(df) < 200: 
+        return None 
         
-    df['Range'] = df['High'] - df['Low']
-    df['Body'] = abs(df['Close'] - df['Open'])
-    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
-    is_bullish = "Demand" in dir_choice
-    current = df.iloc[-1] 
+    current = df.iloc[-1]
+    ema_200 = current['EMA_200']
     
-    zones = []
+    # Calculate upper and lower bounds based on your slider
+    upper_bound = ema_200 * (1 + (buffer_pct / 100))
+    lower_bound = ema_200 * (1 - (buffer_pct / 100))
     
-    for i in range(10, len(df) - max_b - 2):
-        setup_found = False
-        
-        for bases in range(min_b, max_b + 1):
-            if setup_found: break 
-            
-            base_valid = True
-            for b in range(bases):
-                idx = i + b
-                if df['Range'].iloc[idx] == 0: 
-                    base_valid = False
-                    break
-                
-                candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
-                if candle_body_pct > body_pct:
-                    base_valid = False
-                    break
-                    
-            if not base_valid:
-                continue
-                
-            leg_idx = i + bases
-            is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
-            leg_body_pct = (df['Body'].iloc[leg_idx] / df['Range'].iloc[leg_idx]) * 100 if df['Range'].iloc[leg_idx] > 0 else 0
-            
-            if is_bullish:
-                if not is_green or leg_body_pct < 50: continue
-            else:
-                if is_green or leg_body_pct < 50: continue
-                
-            base_slice = df.iloc[i : i + bases]
-            final_leg_close = df['Close'].iloc[leg_idx]
-            
-            if is_bullish:
-                proximal = base_slice['High'].max()
-                distal = base_slice['Low'].min()
-                if final_leg_close <= proximal: continue 
-            else:
-                proximal = base_slice['Low'].min()
-                distal = base_slice['High'].max()
-                if final_leg_close >= proximal: continue
-                    
-            zones.append({
-                'proximal': proximal,
-                'distal': distal,
-                'breakout_vol': df['Volume'].iloc[leg_idx],
-                'index': leg_idx
-            })
-            setup_found = True 
-
-    valid_zones = []
-    for z in zones:
-        future_data = df.iloc[z['index']+1 : -1] 
-        if len(future_data) == 0: continue
-        
-        if is_bullish:
-            if future_data['High'].max() < (z['proximal'] * 1.02): continue
-            if not (future_data['Close'] < z['distal']).any():
-                valid_zones.append(z)
-        else:
-            if future_data['Low'].min() > (z['proximal'] * 0.98): continue
-            if not (future_data['Close'] > z['distal']).any():
-                valid_zones.append(z)
-
-    if not valid_zones: return None
+    # Logic: The price is considered "at support" if it is currently trading inside this buffer zone
+    # OR if the low of the candle tapped the EMA and the close held above it.
+    tapped_support = current['Low'] <= upper_bound and current['Close'] >= lower_bound
     
-    for z in reversed(valid_zones): 
+    if tapped_support:
+        distance_pct = ((current['Close'] - ema_200) / ema_200) * 100
+        return {
+            "Live Price": round(current['Close'], 2),
+            "200 EMA": round(ema_200, 2),
+            "Distance to EMA": f"{distance_pct:+.2f}%"
+        }
         
-        live_ema_44 = current['EMA_44']
-        live_ema_200 = current['EMA_200']
-        
-        in_zone = False
-        ema_44_confluence = True
-        ema_200_confluence = True
-        
-        req_44 = "44 EMA" in trend_choice or "Both" in trend_choice
-        req_200 = "200 EMA" in trend_choice or "Both" in trend_choice
-        
-        if is_bullish:
-            # STRICT ZONE PROXIMITY: Low must tap zone, Close must NOT be > 4% away from zone entry
-            low_tapped = current['Low'] <= (z['proximal'] * 1.01)
-            close_held = current['Close'] >= z['distal']
-            close_near = current['Close'] <= (z['proximal'] * 1.04) 
-            in_zone = low_tapped and close_held and close_near
-            
-            if req_44:
-                # STRICT EMA PROXIMITY: Price must be at EMA (not 20% above), EMA must be at zone
-                price_near_44 = current['Close'] <= (live_ema_44 * 1.04)
-                price_above_44 = current['Close'] >= (live_ema_44 * 0.99)
-                ema_at_zone = (live_ema_44 >= z['distal'] * 0.98) and (live_ema_44 <= z['proximal'] * 1.02)
-                ema_44_confluence = price_above_44 and price_near_44 and ema_at_zone
-                
-            if req_200:
-                ema_200_confluence = (live_ema_44 > live_ema_200) and (current['Close'] > live_ema_200)
-            
-        else:
-            # STRICT ZONE PROXIMITY: High must tap zone, Close must NOT be > 4% below zone entry
-            high_tapped = current['High'] >= (z['proximal'] * 0.99)
-            close_held = current['Close'] <= z['distal']
-            close_near = current['Close'] >= (z['proximal'] * 0.96)
-            in_zone = high_tapped and close_held and close_near
-            
-            if req_44:
-                # STRICT EMA PROXIMITY: Price must be at EMA (not 20% below), EMA must be at zone
-                price_near_44 = current['Close'] >= (live_ema_44 * 0.96)
-                price_below_44 = current['Close'] <= (live_ema_44 * 1.01)
-                ema_at_zone = (live_ema_44 <= z['distal'] * 1.02) and (live_ema_44 >= z['proximal'] * 0.98)
-                ema_44_confluence = price_below_44 and price_near_44 and ema_at_zone
-                
-            if req_200:
-                ema_200_confluence = (live_ema_44 < live_ema_200) and (current['Close'] < live_ema_200)
-
-        volume_is_less = current['Volume'] < z['breakout_vol']
-
-        if in_zone and ema_44_confluence and ema_200_confluence and volume_is_less:
-            risk_pct = (abs(z['proximal'] - z['distal']) / z['proximal']) * 100
-            
-            return {
-                "Live Price": round(current['Close'], 2),
-                "Zone Entry": round(z['proximal'], 2),
-                "Stop Loss": round(z['distal'], 2),
-                "44 EMA": round(live_ema_44, 2),
-                "200 EMA": round(live_ema_200, 2),
-                "Risk %": f"{risk_pct:.2f}%",
-                "Setup Valid": "✅ Yes"
-            }
-            
     return None
 
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Scan Market", type="primary"):
+if st.sidebar.button(f"Scan for 200 EMA Support", type="primary"):
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Executing Strict S&D EMA Scan...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for 200 EMA Support on {selected_tf_label} timeframe...")
         
-        if timeframe == '1h':
-            fetch_period = "730d"
-        elif timeframe == '1d':
-            fetch_period = "2y"
+        # Ensure we fetch enough data history to calculate the 200 EMA for the selected timeframe
+        if timeframe == '1d':
+            fetch_period = "2y"   # ~500 trading days
         elif timeframe == '1wk':
-            fetch_period = "5y"
+            fetch_period = "5y"   # ~260 weeks
         else:
-            fetch_period = "10y"
+            fetch_period = "20y"  # 240 months
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -262,17 +134,13 @@ if st.sidebar.button(f"Scan Market", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=timeframe)
                 if not df.empty:
-                    setup = check_setup(df, direction, min_base, max_base, base_body_pct, trend_option)
+                    setup = check_200_ema(df, proximity_pct)
                     if setup:
-                        setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
-                            "Ticker": setup['Ticker'],
+                            "Ticker": ticker.replace(".NS", ""),
                             "Live Price": setup['Live Price'],
-                            "44 EMA": setup['44 EMA'],
                             "200 EMA": setup['200 EMA'],
-                            "Zone Entry": setup['Zone Entry'],
-                            "Stop Loss": setup['Stop Loss'],
-                            "Risk %": setup['Risk %']
+                            "Distance to EMA": setup['Distance to EMA']
                         })
             except:
                 pass
@@ -285,11 +153,11 @@ if st.sidebar.button(f"Scan Market", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 LIVE S&D Results ({timeframe.upper()})")
+        st.subheader(f"📊 200 EMA Support Results ({selected_tf_label})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. Stocks listed match your exact S&D parameters and EMA trend rules.")
+            st.success(f"Scan complete. Found {len(results)} stocks currently sitting at 200 EMA support.")
         else:
-            st.warning(f"No stocks found. None are currently pulling back to a zone that matches your strict EMA trend filters.")
+            st.warning(f"No stocks found near the 200 EMA on the {selected_tf_label} timeframe right now.")
