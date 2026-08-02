@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Advanced Structure S&D Scanner", layout="wide")
-st.title("🎯 Trend & Structure S&D Scanner (LIVE)")
-st.markdown("Scans for stocks strictly in-trend, requiring a <40% Boring Candle, Break of Structure (BOS), and a low-volume retracement into the zone.")
+st.set_page_config(page_title="S&D + 44 EMA Scanner", layout="wide")
+st.title("🎯 S&D + 44 EMA Dynamic Support Scanner (LIVE)")
+st.markdown("Scans for stocks retracing into a verified Boring Candle Demand/Supply Zone that perfectly coincides with the 44 EMA as dynamic Support/Resistance.")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -25,25 +25,20 @@ sector_options = [
     "Nifty Auto"
 ]
 selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options)
-
 timeframe = st.sidebar.selectbox("Timeframe", ["1h", "1d", "1wk", "1mo"], index=1)
 
 st.sidebar.header("🎯 Pattern Settings")
 
 direction = st.sidebar.radio(
     "Scan Direction & Trend Filter",
-    ("🟢 Demand (Only in Uptrend)", "🔴 Supply (Only in Downtrend)")
+    ("🟢 Demand (At 44 EMA Support)", "🔴 Supply (At 44 EMA Resistance)")
 )
 
-min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", 
-                                       min_value=1, max_value=3, value=(1, 3))
+min_base, max_base = st.sidebar.slider("Number of Base (Boring) Candles (Min - Max)", 
+                                       min_value=1, max_value=5, value=(1, 3))
 
-base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=10, max_value=50, value=40, 
-                                  help="Set to 40%. The body takes up max 40% of the candle's total high-to-low range.")
-
-min_legout, max_legout = st.sidebar.slider("Number of Leg-out Candles (Min - Max)", 
-                                           min_value=1, max_value=6, value=(1, 4))
-
+base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=60, value=40, 
+                                  help="40% means it's a true doji/boring candle (body is small compared to wicks).")
 
 # ==========================================
 # 2. DATA FETCHER (FIREWALL-PROOF)
@@ -81,43 +76,29 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: TREND, BOS, & STRICT ZONE
+# 3. CORE LOGIC: ZONES + 44 EMA + LIVE CHECK
 # ==========================================
-def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
+def check_setup(df, dir_choice, min_b, max_b, body_pct):
     df = df.dropna()
-    
-    if len(df) < 200: return None # Need 200 periods for the 200 EMA Trend Filter
+    if len(df) < 100: return None
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
-    
-    # Calculate Trend EMAs
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     
     is_bullish = "Demand" in dir_choice
     current = df.iloc[-1] # The LIVE market price right now
     
-    # --- MACRO TREND FILTER ---
-    # If looking for Demand, stock MUST be in an uptrend (Price > 50 EMA > 200 EMA)
-    if is_bullish:
-        if current['Close'] < current['EMA_50'] or current['EMA_50'] < current['EMA_200']:
-            return None 
-    # If looking for Supply, stock MUST be in a downtrend (Price < 50 EMA < 200 EMA)
-    else:
-        if current['Close'] > current['EMA_50'] or current['EMA_50'] > current['EMA_200']:
-            return None 
-
     zones = []
     
-    # Scan through history for the pattern matches
-    for i in range(10, len(df) - max_b - max_leg - 1):
+    # Scan through history for the pattern matches (leaving room for leg-outs and live price)
+    for i in range(10, len(df) - max_b - 2):
         setup_found = False
         
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # 1. Base Candle Verification (< 40% Body Rule)
+            # 1. Base Candle Verification (Strictly smaller than max body %)
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -133,102 +114,95 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
             if not base_valid:
                 continue
                 
-            # 2. Leg-out Streak Verification
-            current_streak = 0
-            vols = []
+            # 2. Leg-out Verification (Must be a strong explosive move away from the base)
+            leg_idx = i + bases
+            is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
+            leg_body_pct = (df['Body'].iloc[leg_idx] / df['Range'].iloc[leg_idx]) * 100 if df['Range'].iloc[leg_idx] > 0 else 0
             
-            for L in range(max_leg):
-                idx = i + bases + L
-                is_green = df['Close'].iloc[idx] > df['Open'].iloc[idx]
-                
-                if is_bullish and is_green:
-                    current_streak += 1
-                    vols.append(df['Volume'].iloc[idx])
-                elif not is_bullish and not is_green:
-                    current_streak += 1
-                    vols.append(df['Volume'].iloc[idx])
-                else:
-                    break
-                    
-            if current_streak >= min_leg:
-                actual_leg_len = min(current_streak, max_leg)
-                avg_breakout_vol = sum(vols[:actual_leg_len]) / actual_leg_len
+            # Leg out must be healthy (body > 50% of its range) and in the right direction
+            if is_bullish:
+                if not is_green or leg_body_pct < 50: continue
             else:
-                continue
+                if is_green or leg_body_pct < 50: continue
                 
-            # 3. Calculate Zone & Break of Structure (BOS)
+            # 3. Calculate Zone
             base_slice = df.iloc[i : i + bases]
-            final_leg_close = df['Close'].iloc[i + bases + actual_leg_len - 1]
+            final_leg_close = df['Close'].iloc[leg_idx]
             
             if is_bullish:
                 proximal = base_slice['High'].max()
                 distal = base_slice['Low'].min()
-                
-                # BOS RULE: Break above the recent local swing high (Drop into the Base)
-                local_swing_high = df['High'].iloc[max(0, i-3):i].max() if i > 3 else proximal
-                bos_level = max(proximal, local_swing_high)
-                
-                if final_leg_close <= bos_level: 
-                    continue 
+                if final_leg_close <= proximal: continue 
             else:
                 proximal = base_slice['Low'].min()
                 distal = base_slice['High'].max()
-                
-                # BOS RULE: Break below the recent local swing low (Rally into the Base)
-                local_swing_low = df['Low'].iloc[max(0, i-3):i].min() if i > 3 else proximal
-                bos_level = min(proximal, local_swing_low)
-                
-                if final_leg_close >= bos_level: 
-                    continue
+                if final_leg_close >= proximal: continue
                     
             zones.append({
                 'proximal': proximal,
                 'distal': distal,
-                'breakout_vol': avg_breakout_vol,
-                'index': i + bases + actual_leg_len - 1
+                'breakout_vol': df['Volume'].iloc[leg_idx],
+                'index': leg_idx
             })
             setup_found = True 
 
-    # Validate Zones: True Retracement (Must have departed the zone) & Not Broken
+    # 4. Validate Zones: Must have reacted away previously, and not been broken yet
     valid_zones = []
     for z in zones:
         future_data = df.iloc[z['index']+1 : -1] 
         if len(future_data) == 0: continue
         
         if is_bullish:
-            if future_data['High'].max() < (z['proximal'] * 1.015): continue
+            # Reaction Check: Price must have pushed at least 2% away from the zone before coming back
+            if future_data['High'].max() < (z['proximal'] * 1.02): continue
+            # Invalidation Check: Price must never have closed below the stop loss line
             if not (future_data['Close'] < z['distal']).any():
                 valid_zones.append(z)
         else:
-            if future_data['Low'].min() > (z['proximal'] * 0.985): continue
+            if future_data['Low'].min() > (z['proximal'] * 0.98): continue
             if not (future_data['Close'] > z['distal']).any():
                 valid_zones.append(z)
 
     if not valid_zones: return None
     
-    # 4. Check ALL valid zones to see if the LIVE price is STRICTLY INSIDE one right now
+    # 5. Check LIVE Price & 44 EMA Confluence
     for z in reversed(valid_zones): 
         
-        volume_is_less = current['Volume'] < z['breakout_vol']
+        live_ema = current['EMA_44']
         in_zone = False
+        ema_confluence = False
         
         if is_bullish:
-            # STRICT DEMAND: Live Low touched Proximal AND Live Close is still above Distal
+            # RULE A: In Zone? (Live Low touched Proximal, Live Close above Distal)
             in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
+            
+            # RULE B: 44 EMA Support? (Live price is above EMA, AND EMA is sitting near/inside the zone)
+            price_above_ema = current['Close'] > live_ema
+            ema_at_zone = (live_ema >= z['distal'] * 0.98) and (live_ema <= z['proximal'] * 1.02)
+            ema_confluence = price_above_ema and ema_at_zone
+            
         else:
-            # STRICT SUPPLY: Live High touched Proximal AND Live Close is still below Distal
+            # RULE A: In Zone? (Live High touched Proximal, Live Close below Distal)
             in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
+            
+            # RULE B: 44 EMA Resistance? (Live price is below EMA, AND EMA is sitting near/inside the zone)
+            price_below_ema = current['Close'] < live_ema
+            ema_at_zone = (live_ema <= z['distal'] * 1.02) and (live_ema >= z['proximal'] * 0.98)
+            ema_confluence = price_below_ema and ema_at_zone
 
-        if in_zone and volume_is_less:
+        # Check Volume Dry Up
+        volume_is_less = current['Volume'] < z['breakout_vol']
+
+        if in_zone and ema_confluence and volume_is_less:
             risk_pct = (abs(z['proximal'] - z['distal']) / z['proximal']) * 100
             
             return {
                 "Live Price": round(current['Close'], 2),
                 "Zone Entry": round(z['proximal'], 2),
                 "Stop Loss": round(z['distal'], 2),
-                "Zone Risk": f"{risk_pct:.2f}%",
-                "Vol Dry-Up": "✅ Yes",
-                "Trend": "Uptrend" if is_bullish else "Downtrend"
+                "44 EMA": round(live_ema, 2),
+                "Risk %": f"{risk_pct:.2f}%",
+                "Setup Valid": "✅ Yes"
             }
             
     return None
@@ -236,13 +210,13 @@ def check_setup(df, dir_choice, min_b, max_b, min_leg, max_leg, body_pct):
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Start Structured Scan", type="primary"):
+if st.sidebar.button(f"Scan Market", type="primary"):
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Structure Breaks & Low Volume Pullbacks...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {min_base}-{max_base} Base Zones at 44 EMA Support/Resistance...")
         
         if timeframe == '1h':
             fetch_period = "730d"
@@ -263,17 +237,16 @@ if st.sidebar.button(f"Start Structured Scan", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=timeframe)
                 if not df.empty:
-                    setup = check_setup(df, direction, min_base, max_base, min_legout, max_legout, base_body_pct)
+                    setup = check_setup(df, direction, min_base, max_base, base_body_pct)
                     if setup:
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append({
                             "Ticker": setup['Ticker'],
-                            "Trend": setup['Trend'],
                             "Live Price": setup['Live Price'],
+                            "44 EMA": setup['44 EMA'],
                             "Zone Entry": setup['Zone Entry'],
                             "Stop Loss": setup['Stop Loss'],
-                            "Risk %": setup['Zone Risk'],
-                            "Volume Check": setup['Vol Dry-Up']
+                            "Risk %": setup['Risk %']
                         })
             except:
                 pass
@@ -286,11 +259,11 @@ if st.sidebar.button(f"Start Structured Scan", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 LIVE {direction[:2]} 'In Zone' Results ({timeframe.upper()})")
+        st.subheader(f"📊 LIVE S&D + 44 EMA Results ({timeframe.upper()})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. Stocks listed are actively trading inside a Trend-Aligned, BOS-Confirmed zone on lower volume.")
+            st.success("Target acquired. Stocks listed are actively trading inside a valid zone that is directly supported by the 44 EMA.")
         else:
-            st.warning(f"No stocks found. The market is either not aligned with the trend, or no pullbacks match the strict BOS criteria right now.")
+            st.warning(f"No stocks found. None are currently pulling back to a zone that aligns perfectly with the 44 EMA.")
