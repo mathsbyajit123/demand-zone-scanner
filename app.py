@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Confluence Demand Scanner", layout="wide")
-st.title("🎯 Structural Confluence Demand Scanner (LIVE)")
-st.markdown("Scans for Demand Zones (Boring Bases + Strong Leg-Out) that formed exactly at **Traditional Support/Resistance** (Swing Pivots) in a strict Uptrend.")
+st.set_page_config(page_title="Ultimate Demand & Flip Scanner", layout="wide")
+st.title("🎯 Ultimate Demand & Flip Zone Scanner (STRICT)")
+st.markdown("Scans for stocks strictly trading INSIDE a valid Demand Zone OR an old Supply Zone that has flipped to Demand (Support).")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -29,15 +29,15 @@ selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options)
 timeframe_options = {
     "1 Day": "1d",
     "1 Week": "1wk",
-    "1 Month": "1mo",
-    "3 Months": "3mo"
+    "1 Month": "1mo"
 }
 selected_tf_label = st.sidebar.selectbox("Timeframe", list(timeframe_options.keys()))
 timeframe = timeframe_options[selected_tf_label]
 
-st.sidebar.header("🎯 Pattern Settings")
-min_base, max_base = st.sidebar.slider("Number of Base (Boring) Candles", min_value=1, max_value=3, value=(1, 2))
-base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=50, value=40)
+st.sidebar.header("🎯 Base (Boring Candle) Settings")
+min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", min_value=1, max_value=5, value=(1, 3))
+base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=60, value=40, 
+                                  help="40% means the body is small (max 40% of the high-to-low range).")
 
 # ==========================================
 # 2. DATA FETCHER (FIREWALL-PROOF)
@@ -75,58 +75,26 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: ZONES + S/R CONFLUENCE + TEND
+# 3. CORE LOGIC: DEMAND & FLIP ZONES
 # ==========================================
-def get_dynamic_tf_settings(tf):
-    """Adjusts zone width and S/R overlap buffer based on timeframe."""
-    if tf == '1d':
-        return 0.05, 0.02  # Max Zone width 5%, Pivot Overlap Buffer 2%
-    elif tf == '1wk':
-        return 0.10, 0.04  # Max Zone width 10%, Pivot Overlap Buffer 4%
-    elif tf == '1mo':
-        return 0.20, 0.08  # Max Zone width 20%, Pivot Overlap Buffer 8%
-    elif tf == '3mo':
-        return 0.30, 0.12  # Max Zone width 30%, Pivot Overlap Buffer 12%
-    return 0.05, 0.02
-
-def identify_pivots(df, window=5):
-    """Finds historical Swing Highs and Swing Lows (Traditional S/R)"""
-    df['Swing_High'] = df['High'] == df['High'].rolling(window=2*window+1, center=True).max()
-    df['Swing_Low'] = df['Low'] == df['Low'].rolling(window=2*window+1, center=True).min()
-    return df
-
-def check_setup(df, tf, min_b, max_b, body_pct):
+def check_setup(df, min_b, max_b, body_pct):
     df = df.dropna()
     if len(df) < 50: return None 
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
-    
-    # EMAs for Trend
-    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    
     current = df.iloc[-1]
-    
-    # 1. MACRO TREND FILTER: Price >= 44 EMA and 44 EMA > 200 EMA
-    if current['Close'] < current['EMA_44'] * 0.99 or current['EMA_44'] < current['EMA_200']:
-        return None
-        
-    # Get Dynamic Settings based on TF
-    max_zone_width, sr_buffer = get_dynamic_tf_settings(tf)
-    
-    df = identify_pivots(df)
     
     zones = []
     
-    # 2. Find Confluence Demand Zones
-    for i in range(15, len(df) - max_b - 2):
+    # 1. SCAN HISTORY FOR ALL BASES & BREAKOUTS
+    for i in range(5, len(df) - max_b - 2):
         setup_found = False
         
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # Verify Boring Candles
+            # Check Boring Candles
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -142,82 +110,104 @@ def check_setup(df, tf, min_b, max_b, body_pct):
             if not base_valid:
                 continue
                 
-            # Verify Strong Leg-out
+            # Check Leg-Out (Must be explosive, body > 50% of its own range)
             leg_idx = i + bases
             is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
+            is_red = df['Close'].iloc[leg_idx] < df['Open'].iloc[leg_idx]
             leg_body_pct = (df['Body'].iloc[leg_idx] / df['Range'].iloc[leg_idx]) * 100 if df['Range'].iloc[leg_idx] > 0 else 0
             
-            if not is_green or leg_body_pct < 50: 
+            if leg_body_pct < 50:
                 continue
                 
             base_slice = df.iloc[i : i + bases]
-            proximal = base_slice['High'].max()
-            distal = base_slice['Low'].min()
+            highest_base = base_slice['High'].max()
+            lowest_base = base_slice['Low'].min()
             
-            if df['Close'].iloc[leg_idx] <= proximal: 
-                continue 
+            # Identify Pure Demand (Rally/Drop - Base - Rally)
+            if is_green and df['Close'].iloc[leg_idx] > highest_base:
+                zones.append({
+                    'type': 'Pure Demand',
+                    'proximal': highest_base,  # Entry Line
+                    'distal': lowest_base,     # Stop Loss Line
+                    'index': leg_idx
+                })
+                setup_found = True
                 
-            # Filter 1: Check Dynamic Zone Width
-            zone_width = (proximal - distal) / proximal
-            if zone_width > max_zone_width:
-                continue
-                
-            # Filter 2: STRUCTURAL CONFLUENCE (Must align with a historical pivot)
-            # We look at all historical pivot points that happened *before* this zone was created
-            historical_slice = df.iloc[:i]
-            past_highs = historical_slice[historical_slice['Swing_High']]['High'].values
-            past_lows = historical_slice[historical_slice['Swing_Low']]['Low'].values
-            all_pivots = list(past_highs) + list(past_lows)
-            
-            has_confluence = False
-            for pivot in all_pivots:
-                # Does the pivot fall near our new Demand zone? (Using TF Buffer)
-                if pivot >= distal * (1 - sr_buffer) and pivot <= proximal * (1 + sr_buffer):
-                    has_confluence = True
-                    break
-                    
-            if not has_confluence:
-                continue # Zone is floating in the middle of nowhere. Reject it.
-                    
-            zones.append({
-                'proximal': proximal,
-                'distal': distal,
-                'breakout_vol': df['Volume'].iloc[leg_idx],
-                'index': leg_idx
-            })
-            setup_found = True 
+            # Identify Pure Supply (Rally/Drop - Base - Drop)
+            elif is_red and df['Close'].iloc[leg_idx] < lowest_base:
+                zones.append({
+                    'type': 'Supply',
+                    'proximal': lowest_base,   # Bottom of base
+                    'distal': highest_base,    # Top of base
+                    'index': leg_idx
+                })
+                setup_found = True
 
-    # 3. Validate Zones (Must not be broken)
-    valid_zones = []
+    # 2. VALIDATE ZONES & IDENTIFY FLIPS
+    active_demand_zones = []
+    
     for z in zones:
         future_data = df.iloc[z['index']+1 : -1] 
         if len(future_data) == 0: continue
         
-        # Must have departed the zone slightly before returning
-        if future_data['High'].max() < (z['proximal'] * 1.01): continue
-        # Must not have closed below Distal (Stop Loss) line
-        if not (future_data['Close'] < z['distal']).any():
-            valid_zones.append(z)
+        if z['type'] == 'Pure Demand':
+            # Must not have closed below Distal
+            if not (future_data['Close'] < z['distal']).any():
+                active_demand_zones.append(z)
+                
+        elif z['type'] == 'Supply':
+            # Check if this Supply zone was BROKEN upside (Price closed above its highest point)
+            broken_upside = (future_data['Close'] > z['distal']).any()
+            
+            if broken_upside:
+                # It is now a FLIPPED Zone (Supply turned Demand)
+                # The old top (distal) becomes the new Entry (proximal).
+                # The old bottom (proximal) becomes the new Stop Loss (distal).
+                flipped_proximal = z['distal']
+                flipped_distal = z['proximal']
+                
+                # Check if it has been broken downside AFTER flipping
+                broken_downside = False
+                
+                # Find the index where it broke upside
+                breakout_idx = future_data[future_data['Close'] > z['distal']].index[0]
+                post_breakout_data = df.loc[breakout_idx+1 : current.name]
+                
+                if len(post_breakout_data) > 0 and (post_breakout_data['Close'] < flipped_distal).any():
+                    broken_downside = True
+                    
+                if not broken_downside:
+                    active_demand_zones.append({
+                        'type': 'Supply Turned Demand (Flip)',
+                        'proximal': flipped_proximal,
+                        'distal': flipped_distal,
+                        'index': z['index']
+                    })
 
-    if not valid_zones: return None
+    if not active_demand_zones: return None
     
-    # 4. Check if LIVE Price is actively in the Demand Zone
-    for z in reversed(valid_zones): 
+    # 3. STRICT LIVE PRICE CHECK (No 8% gaps allowed)
+    for z in reversed(active_demand_zones): 
         
-        # Price dropped into Proximal, and hasn't broken Distal
-        in_zone = (current['Low'] <= z['proximal'] * 1.01) and (current['Close'] >= z['distal'])
-        volume_is_less = current['Volume'] < z['breakout_vol']
-
-        if in_zone and volume_is_less:
+        # STRICT LOCK: 
+        # 1. Low must tap the zone OR Close must be physically inside it.
+        # 2. Close must NOT be lower than Stop Loss (Distal).
+        # 3. Close must NOT be higher than 1% above the Entry (Proximal) to prevent "runaway" signals.
+        
+        low_tapped = current['Low'] <= z['proximal']
+        close_held = current['Close'] >= z['distal']
+        close_not_flown_away = current['Close'] <= (z['proximal'] * 1.01) # Max 1% above entry line
+        
+        if low_tapped and close_held and close_not_flown_away:
             risk_pct = (abs(z['proximal'] - z['distal']) / z['proximal']) * 100
             
             return {
+                "Zone Type": z['type'],
                 "Live Price": round(current['Close'], 2),
                 "Zone Entry": round(z['proximal'], 2),
                 "Stop Loss": round(z['distal'], 2),
-                "44 EMA": round(current['EMA_44'], 2),
                 "Risk %": f"{risk_pct:.2f}%",
-                "Confluence": "✅ S/R Verified"
+                "Status": "✅ STRICTLY IN ZONE"
             }
             
     return None
@@ -225,16 +215,20 @@ def check_setup(df, tf, min_b, max_b, body_pct):
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Scan for Confluence Setups", type="primary"):
+if st.sidebar.button(f"Scan for Strict Demand & Flips", type="primary"):
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for structurally verified Demand Zones on {selected_tf_label}...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for strictly active Demand and Flip zones on {selected_tf_label}...")
         
-        # Use max data to ensure 200 EMA and Historical Pivots can form on high TFs like 3-Month
-        fetch_period = "max"
+        if timeframe == '1d':
+            fetch_period = "2y"
+        elif timeframe == '1wk':
+            fetch_period = "5y"
+        else:
+            fetch_period = "10y"
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -246,7 +240,7 @@ if st.sidebar.button(f"Scan for Confluence Setups", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=timeframe)
                 if not df.empty:
-                    setup = check_setup(df, timeframe, min_base, max_base, base_body_pct)
+                    setup = check_setup(df, min_base, max_base, base_body_pct)
                     if setup:
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -261,11 +255,11 @@ if st.sidebar.button(f"Scan for Confluence Setups", type="primary"):
         # ==========================================
         # 5. RESULTS DISPLAY
         # ==========================================
-        st.subheader(f"📊 LIVE Confluence Demand Results ({selected_tf_label})")
+        st.subheader(f"📊 LIVE Demand & Flip Results ({selected_tf_label})")
         
         if results:
             final_df = pd.DataFrame(results)
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. Stocks listed are in an active uptrend (Price $\ge$ 44 EMA $>$ 200 EMA) and have retraced into a structurally verified Demand Zone.")
+            st.success("Target acquired. The stocks listed are physically trading INSIDE the zone boundaries right now. No fake wicks.")
         else:
-            st.warning(f"No stocks found. No valid Demand Zones are aligning with traditional S/R pivots while maintaining the strict uptrend on the {selected_tf_label} timeframe.")
+            st.warning(f"No stocks found. None are currently sitting strictly inside a valid Demand or Flipped Supply zone on the {selected_tf_label} timeframe.")
