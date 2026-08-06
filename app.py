@@ -10,12 +10,11 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Advanced S&D + BOS Flipper", layout="wide")
-st.title("🎯 Advanced S&D + BOS Flip Scanner")
-st.markdown("Scans for pure Demand/Supply bases OR old zones that have been broken with high volume and flipped their role (Supply turned Demand).")
+st.set_page_config(page_title="Pure 1-Base S&D Scanner", layout="wide")
+st.title("🎯 Pure 1-Base Candle S&D Scanner")
+st.markdown("Scans strictly for 1 Base Candle setups, demanding either 2 strong leg-out candles or 1 massive leg-out candle.")
 
 st.sidebar.header("⚙️ Market Settings")
-
 sector_options = [
     "Nifty 50",
     "Nifty 500",
@@ -35,34 +34,32 @@ timeframe_options = {
 selected_tf_label = st.sidebar.selectbox("Timeframe", list(timeframe_options.keys()))
 timeframe = timeframe_options[selected_tf_label]
 
-st.sidebar.header("🎯 Trade Strategy")
+st.sidebar.header("🎯 Scan Direction")
 direction = st.sidebar.radio(
     "Select Setup Direction",
-    ("🟢 Bullish (Buy Setups)", "🔴 Bearish (Sell Setups)")
+    ("🟢 Bullish (Demand: RBR, DBR)", "🔴 Bearish (Supply: RBD, DBD)")
 )
 
-zone_strategy = st.sidebar.radio(
-    "Select Zone Strategy",
+st.sidebar.header("📍 Proximity Filter")
+proximity_filter = st.sidebar.radio(
+    "Where is the Live Price?",
     (
-        "Standard (Pure S&D Zones)", 
-        "Flipped / BOS Retest (Role Reversal)"
-    ),
-    help="Flipped searches for old Supply that was shattered upside with volume, and is now acting as Demand."
+        "Any (In Zone or Near Zone)",
+        "Strictly IN Zone",
+        "Strictly NEAR Zone (Approaching)"
+    )
+)
+
+st.sidebar.header("🧲 Zone Hit-Box")
+hitbox_buffer = st.sidebar.slider(
+    "Near Zone Buffer %", 
+    min_value=0.0, max_value=5.0, value=2.0, step=0.5,
+    help="How far away the price can be to still be considered 'Near'."
 )
 
 st.sidebar.header("📐 Base Candle Settings")
-min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", min_value=1, max_value=5, value=(1, 3))
-base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=80, value=45)
-
-st.sidebar.header("📈 Optional EMA Confluence")
-ema_filter = st.sidebar.radio(
-    "Require EMA Support/Resistance at the Zone?",
-    (
-        "None (Price Action Only)", 
-        "Must be near 44 EMA", 
-        "Must be near 200 EMA"
-    )
-)
+st.sidebar.info("Base candles are locked to exactly ONE (1) candle as requested.")
+base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=80, value=45, help="Body size relative to its High-Low range.")
 
 # ==========================================
 # 2. DATA FETCHER
@@ -81,7 +78,6 @@ def get_index_tickers(sector_name):
     mirrors = [
         f"https://raw.githubusercontent.com/althk/zerobha/main/{csv_file}",
         f"https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/{csv_file}",
-        f"https://raw.githubusercontent.com/rohanmadhale/Python-Portfolio-Optimisation/main/{csv_file}",
         f"https://raw.githubusercontent.com/faizanahemad/data-science-utils/master/data_science_utils/financial/{csv_file}"
     ]
     
@@ -96,266 +92,190 @@ def get_index_tickers(sector_name):
         except Exception:
             continue
             
-    st.sidebar.error("⚠️ Critical Error: Unable to fetch ticker list.")
+    st.sidebar.error("⚠️ Unable to fetch ticker list.")
     return []
 
 # ==========================================
-# 3. CORE LOGIC: S&D + BOS FLIPS
+# 3. CORE LOGIC
 # ==========================================
 def resample_to_75m(df):
     resampled = df.resample('75min', offset='15min').agg({
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
     }).dropna()
     return resampled
 
-def check_setup(df, dir_choice, strategy_choice, min_b, max_b, body_pct, ema_choice):
-    df = df.dropna()
-    if len(df) < 200: return None 
+def check_setup(df, dir_choice, prox_choice, body_pct, buffer_pct):
+    df = df[['Open', 'High', 'Low', 'Close']].dropna()
+    # Need at least a few candles to check leg-in, base, and 2 leg-outs
+    if len(df) < 20: return None 
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
-    df['Vol_SMA'] = df['Volume'].rolling(window=20).mean()
-    
-    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
     is_bullish = "Bullish" in dir_choice
-    is_flipped = "Flipped" in strategy_choice
     current = df.iloc[-1]
     
     target_zones = []
     
-    # 1. SCAN HISTORY FOR ALL PATTERNS
-    for i in range(2, len(df) - max_b - 1):
+    # 1. SCAN HISTORY FOR EXACTLY 1 BASE CANDLE PATTERNS
+    # Loop needs to stop 3 candles before the end to check leg1 and leg2 safely
+    for i in range(1, len(df) - 3):
+        leg_in_idx = i - 1
+        base_idx = i
+        leg1_idx = i + 1
+        leg2_idx = i + 2
+        
+        # --- A. LEG-IN CHECK ---
+        leg_in_is_green = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
+        leg_in_type = "R" if leg_in_is_green else "D" 
+        
+        # --- B. BASE CANDLE CHECK (Exactly 1) ---
+        base_range = df['Range'].iloc[base_idx]
+        if base_range == 0: continue
+        
+        candle_body_pct = (df['Body'].iloc[base_idx] / base_range) * 100
+        if candle_body_pct > body_pct: continue
+            
+        base_high = df['High'].iloc[base_idx]
+        base_low = df['Low'].iloc[base_idx]
+        
+        # --- C. LEG-OUT LOGIC (1 Massive OR 2 Strong) ---
+        leg1_range = df['Range'].iloc[leg1_idx]
+        leg1_body_pct = (df['Body'].iloc[leg1_idx] / leg1_range) * 100 if leg1_range > 0 else 0
+        
+        leg2_range = df['Range'].iloc[leg2_idx]
+        leg2_body_pct = (df['Body'].iloc[leg2_idx] / leg2_range) * 100 if leg2_range > 0 else 0
+        
+        leg1_green = df['Close'].iloc[leg1_idx] > df['Open'].iloc[leg1_idx]
+        leg2_green = df['Close'].iloc[leg2_idx] > df['Open'].iloc[leg2_idx]
+        
+        # Define Strength
+        leg1_strong = leg1_body_pct >= 50
+        leg2_strong = leg2_body_pct >= 50
+        # "Big" candle = body > 65% and its total range is at least 1.5x bigger than the base candle's range
+        leg1_very_strong = leg1_body_pct >= 65 and leg1_range >= (base_range * 1.5)
+        
         setup_found = False
         
-        for bases in range(min_b, max_b + 1):
-            if setup_found: break 
-            
-            leg_in_idx = i - 1
-            leg_in_is_green = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
-            leg_in_type = "R" if leg_in_is_green else "D" 
-            
-            base_valid = True
-            for b in range(bases):
-                idx = i + b
-                if df['Range'].iloc[idx] == 0: 
-                    base_valid = False
-                    break
-                
-                candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
-                if candle_body_pct > body_pct:
-                    base_valid = False
-                    break
-                    
-            if not base_valid:
-                continue
-                
-            leg_idx = i + bases
-            leg_is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
-            leg_range = df['Range'].iloc[leg_idx]
-            leg_body_pct = (df['Body'].iloc[leg_idx] / leg_range) * 100 if leg_range > 0 else 0
-            
-            if leg_body_pct < 50:
-                continue
-                
-            base_slice = df.iloc[i : i + bases]
-            highest_base = base_slice['High'].max()
-            lowest_base = base_slice['Low'].min()
-            
-            # Record Raw Zones
-            if leg_is_green and df['Close'].iloc[leg_idx] > highest_base:
-                target_zones.append({
-                    'raw_type': 'Demand',
-                    'pattern': f"{leg_in_type}BR",
-                    'proximal': highest_base,  
-                    'distal': lowest_base,     
-                    'index': leg_idx
-                })
-                setup_found = True
-            elif not leg_is_green and df['Close'].iloc[leg_idx] < lowest_base:
-                target_zones.append({
-                    'raw_type': 'Supply',
-                    'pattern': f"{leg_in_type}BD",
-                    'proximal': lowest_base,   
-                    'distal': highest_base,    
-                    'index': leg_idx
-                })
-                setup_found = True
+        if is_bullish:
+            # Must close above the base
+            if leg1_green and df['Close'].iloc[leg1_idx] > base_high:
+                # 1 Massive OR 2 Strong
+                if leg1_very_strong or (leg2_green and leg1_strong and leg2_strong):
+                    target_zones.append({
+                        'pattern': f"{leg_in_type}BR",
+                        'proximal': base_high, 
+                        'distal': base_low, 
+                        'index': leg2_idx if (not leg1_very_strong) else leg1_idx
+                    })
+                    setup_found = True
+        else:
+            # Must close below the base
+            if not leg1_green and df['Close'].iloc[leg1_idx] < base_low:
+                # 1 Massive OR 2 Strong
+                if leg1_very_strong or (not leg2_green and leg1_strong and leg2_strong):
+                    target_zones.append({
+                        'pattern': f"{leg_in_type}BD",
+                        'proximal': base_low, 
+                        'distal': base_high, 
+                        'index': leg2_idx if (not leg1_very_strong) else leg1_idx
+                    })
+                    setup_found = True
 
-    # 2. FILTER & PROCESS BASED ON USER STRATEGY
-    final_zones = []
-    
+    # 2. VALIDATE ZONES (Eliminate Broken Zones)
+    valid_zones = []
     for z in target_zones:
         future_data = df.iloc[z['index']+1 : -1] 
         
-        if not is_flipped:
-            # STANDARD S&D LOGIC
-            if len(future_data) == 0:
-                if (is_bullish and z['raw_type'] == 'Demand') or (not is_bullish and z['raw_type'] == 'Supply'):
-                    final_zones.append(z)
-                continue
-                
-            if is_bullish and z['raw_type'] == 'Demand':
-                if not (future_data['Close'] < z['distal']).any():
-                    final_zones.append(z)
-            elif not is_bullish and z['raw_type'] == 'Supply':
-                if not (future_data['Close'] > z['distal']).any():
-                    final_zones.append(z)
-                    
+        if len(future_data) == 0:
+            valid_zones.append(z)
         else:
-            # FLIPPED / BOS RETEST LOGIC
-            if len(future_data) == 0: continue
-            
-            if is_bullish and z['raw_type'] == 'Supply':
-                # Looking for an old Supply zone that was broken upside with high volume
-                breakouts = future_data[future_data['Close'] > z['distal']]
-                
-                if not breakouts.empty:
-                    bos_idx = breakouts.index[0]
-                    # Ensure it broke out with above average volume (The KALYAN JEWELLERS rule)
-                    if df['Volume'].loc[bos_idx] > df['Vol_SMA'].loc[bos_idx]:
-                        
-                        # Verify it hasn't been destroyed downside since flipping
-                        post_bos_data = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-                        
-                        if post_bos_data.empty or not (post_bos_data['Close'] < z['proximal']).any():
-                            final_zones.append({
-                                'pattern': f"Flipped {z['pattern']} (BOS)",
-                                'proximal': z['distal'],  # Old top becomes new entry floor
-                                'distal': z['proximal'],  # Old bottom becomes new SL
-                                'index': bos_idx
-                            })
-                            
-            elif not is_bullish and z['raw_type'] == 'Demand':
-                # Looking for an old Demand zone that was broken downside with high volume
-                breakdowns = future_data[future_data['Close'] < z['distal']]
-                
-                if not breakdowns.empty:
-                    bos_idx = breakdowns.index[0]
-                    if df['Volume'].loc[bos_idx] > df['Vol_SMA'].loc[bos_idx]:
-                        
-                        post_bos_data = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-                        
-                        if post_bos_data.empty or not (post_bos_data['Close'] > z['proximal']).any():
-                            final_zones.append({
-                                'pattern': f"Flipped {z['pattern']} (BOS)",
-                                'proximal': z['distal'],  # Old bottom becomes new entry ceiling
-                                'distal': z['proximal'],  # Old top becomes new SL
-                                'index': bos_idx
-                            })
+            if is_bullish:
+                if not (future_data['Close'] < z['distal']).any(): valid_zones.append(z)
+            else:
+                if not (future_data['Close'] > z['distal']).any(): valid_zones.append(z)
 
-    if not final_zones: return None
+    if not valid_zones: return None
     
-    # 3. LIVE PRICE & EMA CHECK
-    for z in reversed(final_zones): 
+    # 3. PROXIMITY CHECK (Live Price)
+    buffer_mult_bull = 1 + (buffer_pct / 100)
+    buffer_mult_bear = 1 - (buffer_pct / 100)
+    
+    for z in reversed(valid_zones): 
         is_in_zone = False
-        ema_passed = True
+        is_near = False
         
         if is_bullish:
-            # Low taps zone, Close hasn't hit stop loss
+            if current['Close'] < z['distal']: continue # Broken Stop Loss
+            
+            # In Zone: Low tapped entry, Close is above SL
             is_in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
+            # Near Zone: Hovering just above the Entry line
+            is_near = (current['Low'] > z['proximal']) and (current['Low'] <= (z['proximal'] * buffer_mult_bull))
+            
         else:
-            # High taps zone, Close hasn't hit stop loss
+            if current['Close'] > z['distal']: continue # Broken Stop Loss
+            
+            # In Zone: High tapped entry, Close is below SL
             is_in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
+            # Near Zone: Hovering just below the Entry line
+            is_near = (current['High'] < z['proximal']) and (current['High'] >= (z['proximal'] * buffer_mult_bear))
 
-        # Check Optional EMA Filter
-        if "44 EMA" in ema_choice:
-            ema_val = current['EMA_44']
-            ema_distance = abs(ema_val - z['proximal']) / z['proximal']
-            if ema_distance > 0.03: ema_passed = False
-                
-        elif "200 EMA" in ema_choice:
-            ema_val = current['EMA_200']
-            ema_distance = abs(ema_val - z['proximal']) / z['proximal']
-            if ema_distance > 0.03: ema_passed = False
+        # Apply User Filter
+        if "Strictly IN Zone" in prox_choice and not is_in_zone: continue
+        if "Strictly NEAR Zone" in prox_choice and not is_near: continue
+        if "Any" in prox_choice and not (is_in_zone or is_near): continue
 
-        if is_in_zone and ema_passed:
-            risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
-            
-            ema_col_text = "N/A"
-            if "44 EMA" in ema_choice: ema_col_text = f"44 EMA: {current['EMA_44']:.2f}"
-            if "200 EMA" in ema_choice: ema_col_text = f"200 EMA: {current['EMA_200']:.2f}"
-            
-            return {
-                "Pattern": z['pattern'],
-                "Live Price": round(current['Close'], 2),
-                "Zone Entry": round(z['proximal'], 2),
-                "Stop Loss": round(z['distal'], 2),
-                "Risk %": f"{risk_pct:.2f}%",
-                "EMA Confluence": ema_col_text,
-                "Status": "✅ IN ZONE"
-            }
+        risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
+        status = "✅ IN ZONE" if is_in_zone else f"⏳ NEAR ZONE (<{buffer_pct}%)"
+        
+        return {
+            "Pattern": z['pattern'],
+            "Live Price": round(current['Close'], 2),
+            "Zone Entry": round(z['proximal'], 2),
+            "Stop Loss": round(z['distal'], 2),
+            "Risk %": f"{risk_pct:.2f}%",
+            "Status": status
+        }
             
     return None
 
 # ==========================================
-# 4. EXECUTION ENGINE
+# 4. EXECUTION
 # ==========================================
 if st.sidebar.button(f"Launch Scanner", type="primary"):
-    
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for active {direction[:2]} setups...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for Pure 1-Base setups...")
         
-        if timeframe == '75m':
-            fetch_period, fetch_interval = "60d", "15m"
-        elif timeframe == '1d':
-            fetch_period, fetch_interval = "2y", "1d"
-        elif timeframe == '1wk':
-            fetch_period, fetch_interval = "5y", "1wk"
-        else:
-            fetch_period, fetch_interval = "10y", "1mo"
+        if timeframe == '75m': fetch_period, fetch_interval = "60d", "15m"
+        elif timeframe == '1d': fetch_period, fetch_interval = "2y", "1d"
+        elif timeframe == '1wk': fetch_period, fetch_interval = "5y", "1wk"
+        else: fetch_period, fetch_interval = "10y", "1mo"
         
         progress_bar = st.progress(0)
-        status_text = st.empty()
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            status_text.text(f"Scanning {i+1}/{len(ticker_list)}: {ticker}...")
-            
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=fetch_interval)
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                        
-                    setup = check_setup(df, direction, zone_strategy, min_base, max_base, base_body_pct, ema_filter)
-                    
+                    setup = check_setup(df, direction, proximity_filter, base_body_pct, hitbox_buffer)
                     if setup:
-                        results.append({
-                            'Ticker': ticker.replace(".NS", ""),
-                            'Pattern': setup['Pattern'],
-                            'Live Price': setup['Live Price'],
-                            'Zone Entry': setup['Zone Entry'],
-                            'Stop Loss': setup['Stop Loss'],
-                            'Risk %': setup['Risk %'],
-                            'EMA Confluence': setup['EMA Confluence'],
-                            'Status': setup['Status']
-                        })
-            except:
-                pass
-                
+                        setup['Ticker'] = ticker.replace(".NS", "")
+                        results.append(setup)
+            except: pass
             progress_bar.progress((i + 1) / len(ticker_list))
             
-        status_text.empty()
         progress_bar.empty()
         
-        # ==========================================
-        # 5. RESULTS DISPLAY
-        # ==========================================
-        st.subheader(f"📊 {direction[:2]} Scan Results ({selected_tf_label})")
-        
+        st.subheader(f"📊 Scan Results ({selected_tf_label})")
         if results:
-            final_df = pd.DataFrame(results)
-            cols = ['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'EMA Confluence', 'Status']
-            final_df = final_df[cols]
+            final_df = pd.DataFrame(results)[['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'Status']]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success(f"Scan Complete. Target setups acquired.")
+            st.success(f"Target setups acquired successfully.")
         else:
-            st.warning(f"No stocks found. The market is not presenting this exact setup on this timeframe right now.")
+            st.warning(f"0 matches. No stocks currently satisfy the strict 1-Base & strong 2-leg-out rules.")
