@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Simple S&D + EMA Scanner", layout="wide")
-st.title("🎯 Simple S&D + Optional EMA Scanner")
-st.markdown("Scans for stocks actively trading inside pure Demand (RBR, DBR) or Supply (RBD, DBD) zones. Features optional EMA confluence filters.")
+st.set_page_config(page_title="Advanced S&D + BOS Flipper", layout="wide")
+st.title("🎯 Advanced S&D + BOS Flip Scanner")
+st.markdown("Scans for pure Demand/Supply bases OR old zones that have been broken with high volume and flipped their role (Supply turned Demand).")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -35,26 +35,33 @@ timeframe_options = {
 selected_tf_label = st.sidebar.selectbox("Timeframe", list(timeframe_options.keys()))
 timeframe = timeframe_options[selected_tf_label]
 
-st.sidebar.header("🎯 Scan Direction")
+st.sidebar.header("🎯 Trade Strategy")
 direction = st.sidebar.radio(
     "Select Setup Direction",
-    ("🟢 Bullish (Demand Setups)", "🔴 Bearish (Supply Setups)")
+    ("🟢 Bullish (Buy Setups)", "🔴 Bearish (Sell Setups)")
+)
+
+zone_strategy = st.sidebar.radio(
+    "Select Zone Strategy",
+    (
+        "Standard (Pure S&D Zones)", 
+        "Flipped / BOS Retest (Role Reversal)"
+    ),
+    help="Flipped searches for old Supply that was shattered upside with volume, and is now acting as Demand."
 )
 
 st.sidebar.header("📐 Base Candle Settings")
 min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", min_value=1, max_value=5, value=(1, 3))
-base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=80, value=45, 
-                                  help="The body must be max 45% of the total candle range.")
+base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=80, value=45)
 
 st.sidebar.header("📈 Optional EMA Confluence")
 ema_filter = st.sidebar.radio(
     "Require EMA Support/Resistance at the Zone?",
     (
-        "None (Pure S&D Only)", 
+        "None (Price Action Only)", 
         "Must be near 44 EMA", 
         "Must be near 200 EMA"
-    ),
-    help="If an EMA is selected, that EMA line must be physically passing through or near the zone."
+    )
 )
 
 # ==========================================
@@ -93,7 +100,7 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: S&D PATTERNS + EMA
+# 3. CORE LOGIC: S&D + BOS FLIPS
 # ==========================================
 def resample_to_75m(df):
     resampled = df.resample('75min', offset='15min').agg({
@@ -105,34 +112,34 @@ def resample_to_75m(df):
     }).dropna()
     return resampled
 
-def check_setup(df, dir_choice, min_b, max_b, body_pct, ema_choice):
+def check_setup(df, dir_choice, strategy_choice, min_b, max_b, body_pct, ema_choice):
     df = df.dropna()
-    if len(df) < 200: return None # Need 200 periods for 200 EMA
+    if len(df) < 200: return None 
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
+    df['Vol_SMA'] = df['Volume'].rolling(window=20).mean()
     
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
     is_bullish = "Bullish" in dir_choice
+    is_flipped = "Flipped" in strategy_choice
     current = df.iloc[-1]
     
-    zones = []
+    target_zones = []
     
-    # 1. SCAN HISTORY FOR PATTERNS
+    # 1. SCAN HISTORY FOR ALL PATTERNS
     for i in range(2, len(df) - max_b - 1):
         setup_found = False
         
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # Leg-In Analysis
             leg_in_idx = i - 1
             leg_in_is_green = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
             leg_in_type = "R" if leg_in_is_green else "D" 
             
-            # Base Verification (Boring Candles)
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -148,13 +155,11 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, ema_choice):
             if not base_valid:
                 continue
                 
-            # Leg-Out Verification (Momentum)
             leg_idx = i + bases
             leg_is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
             leg_range = df['Range'].iloc[leg_idx]
             leg_body_pct = (df['Body'].iloc[leg_idx] / leg_range) * 100 if leg_range > 0 else 0
             
-            # Leg-out must be strong
             if leg_body_pct < 50:
                 continue
                 
@@ -162,80 +167,116 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, ema_choice):
             highest_base = base_slice['High'].max()
             lowest_base = base_slice['Low'].min()
             
-            # Categorize the setup
-            if is_bullish:
-                # Demand Zone: Leg-out must be Green and close above the base
-                if leg_is_green and df['Close'].iloc[leg_idx] > highest_base:
-                    zones.append({
-                        'pattern': f"{leg_in_type}BR", # RBR or DBR
-                        'proximal': highest_base,  
-                        'distal': lowest_base,     
-                        'index': leg_idx
-                    })
-                    setup_found = True
-            else:
-                # Supply Zone: Leg-out must be Red and close below the base
-                if not leg_is_green and df['Close'].iloc[leg_idx] < lowest_base:
-                    zones.append({
-                        'pattern': f"{leg_in_type}BD", # RBD or DBD
-                        'proximal': lowest_base,   
-                        'distal': highest_base,    
-                        'index': leg_idx
-                    })
-                    setup_found = True
+            # Record Raw Zones
+            if leg_is_green and df['Close'].iloc[leg_idx] > highest_base:
+                target_zones.append({
+                    'raw_type': 'Demand',
+                    'pattern': f"{leg_in_type}BR",
+                    'proximal': highest_base,  
+                    'distal': lowest_base,     
+                    'index': leg_idx
+                })
+                setup_found = True
+            elif not leg_is_green and df['Close'].iloc[leg_idx] < lowest_base:
+                target_zones.append({
+                    'raw_type': 'Supply',
+                    'pattern': f"{leg_in_type}BD",
+                    'proximal': lowest_base,   
+                    'distal': highest_base,    
+                    'index': leg_idx
+                })
+                setup_found = True
 
-    # 2. VALIDATE ZONES (Ensure they are unbroken)
-    valid_zones = []
-    for z in zones:
+    # 2. FILTER & PROCESS BASED ON USER STRATEGY
+    final_zones = []
+    
+    for z in target_zones:
         future_data = df.iloc[z['index']+1 : -1] 
         
-        if len(future_data) == 0:
-            valid_zones.append(z)
-            continue
-            
-        if is_bullish:
-            # For Demand, price must not have closed below Distal
-            if not (future_data['Close'] < z['distal']).any():
-                valid_zones.append(z)
+        if not is_flipped:
+            # STANDARD S&D LOGIC
+            if len(future_data) == 0:
+                if (is_bullish and z['raw_type'] == 'Demand') or (not is_bullish and z['raw_type'] == 'Supply'):
+                    final_zones.append(z)
+                continue
+                
+            if is_bullish and z['raw_type'] == 'Demand':
+                if not (future_data['Close'] < z['distal']).any():
+                    final_zones.append(z)
+            elif not is_bullish and z['raw_type'] == 'Supply':
+                if not (future_data['Close'] > z['distal']).any():
+                    final_zones.append(z)
+                    
         else:
-            # For Supply, price must not have closed above Distal
-            if not (future_data['Close'] > z['distal']).any():
-                valid_zones.append(z)
+            # FLIPPED / BOS RETEST LOGIC
+            if len(future_data) == 0: continue
+            
+            if is_bullish and z['raw_type'] == 'Supply':
+                # Looking for an old Supply zone that was broken upside with high volume
+                breakouts = future_data[future_data['Close'] > z['distal']]
+                
+                if not breakouts.empty:
+                    bos_idx = breakouts.index[0]
+                    # Ensure it broke out with above average volume (The KALYAN JEWELLERS rule)
+                    if df['Volume'].loc[bos_idx] > df['Vol_SMA'].loc[bos_idx]:
+                        
+                        # Verify it hasn't been destroyed downside since flipping
+                        post_bos_data = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+                        
+                        if post_bos_data.empty or not (post_bos_data['Close'] < z['proximal']).any():
+                            final_zones.append({
+                                'pattern': f"Flipped {z['pattern']} (BOS)",
+                                'proximal': z['distal'],  # Old top becomes new entry floor
+                                'distal': z['proximal'],  # Old bottom becomes new SL
+                                'index': bos_idx
+                            })
+                            
+            elif not is_bullish and z['raw_type'] == 'Demand':
+                # Looking for an old Demand zone that was broken downside with high volume
+                breakdowns = future_data[future_data['Close'] < z['distal']]
+                
+                if not breakdowns.empty:
+                    bos_idx = breakdowns.index[0]
+                    if df['Volume'].loc[bos_idx] > df['Vol_SMA'].loc[bos_idx]:
+                        
+                        post_bos_data = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+                        
+                        if post_bos_data.empty or not (post_bos_data['Close'] > z['proximal']).any():
+                            final_zones.append({
+                                'pattern': f"Flipped {z['pattern']} (BOS)",
+                                'proximal': z['distal'],  # Old bottom becomes new entry ceiling
+                                'distal': z['proximal'],  # Old top becomes new SL
+                                'index': bos_idx
+                            })
 
-    if not valid_zones: return None
+    if not final_zones: return None
     
-    # 3. LIVE PRICE & EMA CONFLUENCE CHECK
-    for z in reversed(valid_zones): 
+    # 3. LIVE PRICE & EMA CHECK
+    for z in reversed(final_zones): 
         is_in_zone = False
         ema_passed = True
         
-        # Check if LIVE Price is IN the zone
         if is_bullish:
-            # Low taps proximal, Close is above distal (no stop loss hit)
+            # Low taps zone, Close hasn't hit stop loss
             is_in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
         else:
-            # High taps proximal, Close is below distal
+            # High taps zone, Close hasn't hit stop loss
             is_in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
 
         # Check Optional EMA Filter
         if "44 EMA" in ema_choice:
             ema_val = current['EMA_44']
-            # EMA must be within 3% of the Proximal (Entry) line to act as confluence
             ema_distance = abs(ema_val - z['proximal']) / z['proximal']
-            if ema_distance > 0.03: 
-                ema_passed = False
+            if ema_distance > 0.03: ema_passed = False
                 
         elif "200 EMA" in ema_choice:
             ema_val = current['EMA_200']
-            # EMA must be within 3% of the Proximal (Entry) line to act as confluence
             ema_distance = abs(ema_val - z['proximal']) / z['proximal']
-            if ema_distance > 0.03: 
-                ema_passed = False
+            if ema_distance > 0.03: ema_passed = False
 
         if is_in_zone and ema_passed:
             risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
             
-            # Format EMA string for table
             ema_col_text = "N/A"
             if "44 EMA" in ema_choice: ema_col_text = f"44 EMA: {current['EMA_44']:.2f}"
             if "200 EMA" in ema_choice: ema_col_text = f"200 EMA: {current['EMA_200']:.2f}"
@@ -263,7 +304,6 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
     if ticker_list:
         st.info(f"Loaded {len(ticker_list)} stocks. Hunting for active {direction[:2]} setups...")
         
-        # Adjust fetch period based on timeframe limits
         if timeframe == '75m':
             fetch_period, fetch_interval = "60d", "15m"
         elif timeframe == '1d':
@@ -283,10 +323,9 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
             try:
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=fetch_interval)
                 if not df.empty:
-                    if timeframe == '75m':
-                        df = resample_to_75m(df)
+                    if timeframe == '75m': df = resample_to_75m(df)
                         
-                    setup = check_setup(df, direction, min_base, max_base, base_body_pct, ema_filter)
+                    setup = check_setup(df, direction, zone_strategy, min_base, max_base, base_body_pct, ema_filter)
                     
                     if setup:
                         results.append({
@@ -314,10 +353,9 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
         
         if results:
             final_df = pd.DataFrame(results)
-            # Reorder columns to ensure Ticker is exactly on the left
             cols = ['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'EMA Confluence', 'Status']
             final_df = final_df[cols]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success(f"Scan Complete. Engine successfully found setups trading inside the zones.")
+            st.success(f"Scan Complete. Target setups acquired.")
         else:
-            st.warning(f"No stocks found. Try relaxing the EMA confluence filter if you have one applied.")
+            st.warning(f"No stocks found. The market is not presenting this exact setup on this timeframe right now.")
