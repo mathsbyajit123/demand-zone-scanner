@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Strict S&D Trend Scanner", layout="wide")
-st.title("🎯 Strict 1-Base S&D + Trend Alignment Scanner")
-st.markdown("Mathematically locked to exactly 1 base candle and strict leg-out rules, now featuring macro trend alignment (44/200 EMA).")
+st.set_page_config(page_title="EMA Proximity Scanner", layout="wide")
+st.title("🎯 Pure EMA Proximity & Bounce Scanner")
+st.markdown("Scans for stocks interacting with the 44 EMA or 200 EMA. Tolerates wicks and slight crosses based on your exact settings.")
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
@@ -37,35 +37,26 @@ timeframe = timeframe_options[selected_tf_label]
 st.sidebar.header("🎯 Trade Setup")
 direction = st.sidebar.radio(
     "Select Setup Direction",
-    ("🟢 Bullish (Demand: RBR, DBR)", "🔴 Bearish (Supply: RBD, DBD)")
+    ("🟢 Bullish (Support / Bounce)", "🔴 Bearish (Resistance / Rejection)")
 )
 
-st.sidebar.header("📈 Macro Trend Filter")
-strict_trend = st.sidebar.checkbox(
-    "✅ Require Strict Trend Alignment", 
-    value=True, 
-    help="Bullish: Live Price > 44 EMA > 200 EMA. Bearish: Live Price < 44 EMA < 200 EMA."
+st.sidebar.header("📈 Target EMA")
+ema_target = st.sidebar.radio(
+    "Which EMA are you tracking?",
+    ("44 EMA", "200 EMA", "Both (Must tap either)")
 )
 
-st.sidebar.header("📐 Base Settings")
-base_body_pct = st.sidebar.slider("Max Base Candle Body %", min_value=10, max_value=80, value=45, help="Body size relative to total high-to-low range.")
-
-st.sidebar.header("📍 Entry & Confluence")
-proximity_filter = st.sidebar.radio(
-    "Where is the Live Price?",
-    (
-        "Any (In Zone or Near Zone)",
-        "Strictly IN Zone",
-        "Strictly NEAR Zone (Approaching)"
-    )
+st.sidebar.header("🧲 Tolerance & Wicks")
+approach_buffer = st.sidebar.slider(
+    "Approach Buffer (%)", 
+    min_value=0.0, max_value=5.0, value=2.0, step=0.5,
+    help="How close the wick (High/Low) must get to the EMA to count as a touch."
 )
 
-hitbox_buffer = st.sidebar.slider("Near Zone Buffer %", min_value=0.0, max_value=5.0, value=2.0, step=0.5)
-
-ema_filter = st.sidebar.radio(
-    "Require EMA Confluence at Zone?",
-    ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA"),
-    help="Ensures the chosen EMA is physically passing through or sitting right next to the zone entry."
+cross_allowance = st.sidebar.slider(
+    "Max Penetration / Cross Allowance (%)", 
+    min_value=0.0, max_value=5.0, value=1.0, step=0.5,
+    help="How far the closing price is allowed to cross past the EMA before the setup is considered broken/invalid."
 )
 
 # ==========================================
@@ -103,7 +94,7 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC
+# 3. CORE LOGIC: EMA PROXIMITY
 # ==========================================
 def resample_to_75m(df):
     resampled = df.resample('75min', offset='15min').agg({
@@ -111,170 +102,98 @@ def resample_to_75m(df):
     }).dropna()
     return resampled
 
-def check_setup(df, dir_choice, prox_choice, body_pct, buffer_pct, ema_choice, require_trend):
+def check_ema_setup(df, dir_choice, ema_choice, approach_pct, cross_pct):
     df = df[['Open', 'High', 'Low', 'Close']].dropna()
-    if len(df) < 200: return None # Need 200 for EMAs
+    if len(df) < 200: return None 
         
-    df['Range'] = df['High'] - df['Low']
-    df['Body'] = abs(df['Close'] - df['Open'])
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
     is_bullish = "Bullish" in dir_choice
     current = df.iloc[-1]
     
-    # 0. STRICT MACRO TREND CHECK (GATEKEEPER)
-    if require_trend:
+    app_mult_bull = 1 + (approach_pct / 100)
+    app_mult_bear = 1 - (approach_pct / 100)
+    
+    cross_mult_bull = 1 - (cross_pct / 100)
+    cross_mult_bear = 1 + (cross_pct / 100)
+    
+    targets = []
+    if "44" in ema_choice or "Both" in ema_choice: targets.append(("44 EMA", current['EMA_44']))
+    if "200" in ema_choice or "Both" in ema_choice: targets.append(("200 EMA", current['EMA_200']))
+    
+    matched_emas = []
+    
+    for ema_name, ema_val in targets:
         if is_bullish:
-            if not (current['Close'] > current['EMA_44'] and current['EMA_44'] > current['EMA_200']):
-                return None
-        else:
-            if not (current['Close'] < current['EMA_44'] and current['EMA_44'] < current['EMA_200']):
-                return None
-    
-    target_zones = []
-    
-    # 1. STRICT 1-BASE PATTERN SCAN
-    # Must stop at len-3 to safely check leg_in(i-1), base(i), leg1(i+1), leg2(i+2)
-    for i in range(1, len(df) - 3):
-        leg_in_idx = i - 1
-        base_idx = i
-        leg1_idx = i + 1
-        leg2_idx = i + 2
-        
-        # A. LEG-IN
-        leg_in_green = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
-        leg_in_type = "R" if leg_in_green else "D" 
-        
-        # B. BASE CANDLE (Exactly 1)
-        base_range = df['Range'].iloc[base_idx]
-        if base_range == 0: continue
-        
-        candle_body_pct = (df['Body'].iloc[base_idx] / base_range) * 100
-        if candle_body_pct > body_pct: continue # Reject if body is too big
+            # 1. Did the Low tap the EMA (or come within the approach buffer)?
+            tapped_ema = current['Low'] <= (ema_val * app_mult_bull)
             
-        base_high = df['High'].iloc[base_idx]
-        base_low = df['Low'].iloc[base_idx]
-        
-        # C. LEG-OUT LOGIC
-        leg1_range = df['Range'].iloc[leg1_idx]
-        leg1_body_pct = (df['Body'].iloc[leg1_idx] / leg1_range) * 100 if leg1_range > 0 else 0
-        leg1_green = df['Close'].iloc[leg1_idx] > df['Open'].iloc[leg1_idx]
-        
-        leg2_range = df['Range'].iloc[leg2_idx]
-        leg2_body_pct = (df['Body'].iloc[leg2_idx] / leg2_range) * 100 if leg2_range > 0 else 0
-        leg2_green = df['Close'].iloc[leg2_idx] > df['Open'].iloc[leg2_idx]
-        
-        # Define strict momentum rules
-        leg1_strong = leg1_body_pct >= 50
-        leg2_strong = leg2_body_pct >= 50
-        
-        # 1 Massive Leg Rule: Body is 60%+ of range, and candle is 1.5x bigger than base
-        leg1_massive = (leg1_body_pct >= 60) and (leg1_range >= (base_range * 1.5))
-        
-        if is_bullish:
-            # DEMAND: Breakout must be green and close strictly above base high
-            if leg1_green and (df['Close'].iloc[leg1_idx] > base_high):
-                
-                # 2 Strong Legs Rule: Both green, both strong, leg 2 closes higher than leg 1
-                two_strong = leg1_strong and leg2_green and leg2_strong and (df['Close'].iloc[leg2_idx] > df['Close'].iloc[leg1_idx])
-                
-                if leg1_massive or two_strong:
-                    target_zones.append({
-                        'pattern': f"{leg_in_type}BR",
-                        'proximal': base_high, 
-                        'distal': base_low, 
-                        'index': leg2_idx if two_strong else leg1_idx
-                    })
+            # 2. Did the Close respect the Cross Allowance? (Not crashing straight through)
+            held_ema = current['Close'] >= (ema_val * cross_mult_bull)
+            
+            if tapped_ema and held_ema:
+                dist_pct = ((current['Close'] - ema_val) / ema_val) * 100
+                matched_emas.append({
+                    "Target": ema_name,
+                    "EMA Value": round(ema_val, 2),
+                    "Distance": f"{dist_pct:+.2f}%"
+                })
         else:
-            # SUPPLY: Breakdown must be red and close strictly below base low
-            if not leg1_green and (df['Close'].iloc[leg1_idx] < base_low):
-                
-                # 2 Strong Legs Rule: Both red, both strong, leg 2 closes lower than leg 1
-                two_strong = leg1_strong and not leg2_green and leg2_strong and (df['Close'].iloc[leg2_idx] < df['Close'].iloc[leg1_idx])
-                
-                if leg1_massive or two_strong:
-                    target_zones.append({
-                        'pattern': f"{leg_in_type}BD",
-                        'proximal': base_low, 
-                        'distal': base_high, 
-                        'index': leg2_idx if two_strong else leg1_idx
-                    })
+            # 1. Did the High tap the EMA (or come within the approach buffer)?
+            tapped_ema = current['High'] >= (ema_val * app_mult_bear)
+            
+            # 2. Did the Close respect the Cross Allowance? (Not breaking straight through upside)
+            held_ema = current['Close'] <= (ema_val * cross_mult_bear)
+            
+            if tapped_ema and held_ema:
+                dist_pct = ((current['Close'] - ema_val) / ema_val) * 100
+                matched_emas.append({
+                    "Target": ema_name,
+                    "EMA Value": round(ema_val, 2),
+                    "Distance": f"{dist_pct:+.2f}%"
+                })
 
-    # 2. VALIDATE ZONES (Reject Broken Zones)
-    valid_zones = []
-    for z in target_zones:
-        future_data = df.iloc[z['index']+1 : -1] 
-        if len(future_data) == 0:
-            valid_zones.append(z)
-        else:
-            if is_bullish:
-                if not (future_data['Close'] < z['distal']).any(): valid_zones.append(z)
-            else:
-                if not (future_data['Close'] > z['distal']).any(): valid_zones.append(z)
-
-    if not valid_zones: return None
+    if not matched_emas:
+        return None
+        
+    # If multiple EMAs match, just take the first one (or format a string for both)
+    primary_match = matched_emas[0]
     
-    # 3. LIVE PRICE PROXIMITY & EMA CONFLUENCE LOGIC
-    buffer_mult_bull = 1 + (buffer_pct / 100)
-    buffer_mult_bear = 1 - (buffer_pct / 100)
-    
-    for z in reversed(valid_zones): 
-        is_in_zone = False
-        is_near = False
-        ema_passed = True
-        
-        # PROXIMITY
-        if is_bullish:
-            if current['Close'] < z['distal']: continue # Zone broken today
-            is_in_zone = (current['Low'] <= z['proximal']) and (current['Close'] >= z['distal'])
-            is_near = (current['Low'] > z['proximal']) and (current['Low'] <= (z['proximal'] * buffer_mult_bull))
+    # Determine visual status based on close price vs EMA
+    status = "N/A"
+    if is_bullish:
+        if current['Close'] < primary_match['EMA Value']:
+            status = "⚠️ Slight Cross Down"
+        elif current['Close'] > current['Open']:
+            status = "✅ Bouncing (Green)"
         else:
-            if current['Close'] > z['distal']: continue # Zone broken today
-            is_in_zone = (current['High'] >= z['proximal']) and (current['Close'] <= z['distal'])
-            is_near = (current['High'] < z['proximal']) and (current['High'] >= (z['proximal'] * buffer_mult_bear))
+            status = "⏳ Resting on EMA"
+    else:
+        if current['Close'] > primary_match['EMA Value']:
+            status = "⚠️ Slight Cross Up"
+        elif current['Close'] < current['Open']:
+            status = "✅ Rejecting (Red)"
+        else:
+            status = "⏳ Resting on EMA"
 
-        # APPLY USER PROXIMITY FILTER
-        if "Strictly IN Zone" in prox_choice and not is_in_zone: continue
-        if "Strictly NEAR Zone" in prox_choice and not is_near: continue
-        if "Any" in prox_choice and not (is_in_zone or is_near): continue
-
-        # CONFLUENCE EMA LOGIC
-        if ema_choice != "None (Pure Price Action)":
-            ema_val = current['EMA_44'] if "44" in ema_choice else current['EMA_200']
-            # EMA must be within 3% of the entry line
-            if abs(ema_val - z['proximal']) / z['proximal'] > 0.03: 
-                ema_passed = False
-
-        if ema_passed:
-            risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
-            status = "✅ IN ZONE" if is_in_zone else f"⏳ NEAR ZONE (<{buffer_pct}%)"
-            
-            ema_str = "N/A"
-            if "44" in ema_choice: ema_str = f"44 EMA: {current['EMA_44']:.2f}"
-            if "200" in ema_choice: ema_str = f"200 EMA: {current['EMA_200']:.2f}"
-            
-            return {
-                "Pattern": z['pattern'],
-                "Live Price": round(current['Close'], 2),
-                "Zone Entry": round(z['proximal'], 2),
-                "Stop Loss": round(z['distal'], 2),
-                "Risk %": f"{risk_pct:.2f}%",
-                "EMA Data": ema_str,
-                "Status": status
-            }
-            
-    return None
+    return {
+        "Live Price": round(current['Close'], 2),
+        "EMA Target": primary_match['Target'],
+        "EMA Value": primary_match['EMA Value'],
+        "Close vs EMA": primary_match['Distance'],
+        "Action Status": status
+    }
 
 # ==========================================
 # 4. EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button(f"Launch Scanner", type="primary"):
+if st.sidebar.button(f"Launch EMA Scanner", type="primary"):
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for strictly validated setups with Trend Filter = {strict_trend}...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Scanning for {direction[:2]} EMA interactions...")
         
         if timeframe == '75m': fetch_period, fetch_interval = "60d", "15m"
         elif timeframe == '1d': fetch_period, fetch_interval = "2y", "1d"
@@ -289,7 +208,8 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
                 df = yf.Ticker(ticker).history(period=fetch_period, interval=fetch_interval)
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = check_setup(df, direction, proximity_filter, base_body_pct, hitbox_buffer, ema_filter, strict_trend)
+                    
+                    setup = check_ema_setup(df, direction, ema_target, approach_buffer, cross_allowance)
                     if setup:
                         setup['Ticker'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -300,8 +220,8 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
         
         st.subheader(f"📊 Scan Results ({selected_tf_label})")
         if results:
-            final_df = pd.DataFrame(results)[['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'EMA Data', 'Status']]
+            final_df = pd.DataFrame(results)[['Ticker', 'Live Price', 'EMA Target', 'EMA Value', 'Close vs EMA', 'Action Status']]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success(f"Results acquired. These strictly match the 1-Base rules and Trend Alignment.")
+            st.success(f"Results acquired. These stocks are interacting with the specified EMA.")
         else:
-            st.warning(f"0 matches found. The strict trend filter and S&D rules eliminated all weak setups.")
+            st.warning(f"0 matches found. The market is not presenting this EMA setup right now. Adjust your Tolerance sliders.")
