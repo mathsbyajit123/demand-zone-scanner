@@ -10,9 +10,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Advanced S&D Zone & Flip Engine", layout="wide")
-st.title("🎯 S&D Pattern & Flip Zone Scanner")
-st.markdown("Identifies strict RBR, DBR, RBD, DBD patterns and tracks old zones that have flipped (e.g., Supply turned Demand).")
+st.set_page_config(page_title="Ultra-Strict S&D Engine", layout="wide")
+st.title("🎯 Ultra-Strict Base & Flip Scanner")
+st.markdown("Scans for zones built exclusively from truly small base candles (capped by timeframe). No massive dojis allowed.")
 
 st.sidebar.header("⚙️ Market Settings")
 
@@ -37,18 +37,24 @@ timeframe = timeframe_options[selected_tf_label]
 
 st.sidebar.header("🎯 Scan Direction")
 direction = st.sidebar.radio(
-    "Select Setup Type",
-    ("🟢 Bullish (Demand & Flipped Supply)", "🔴 Bearish (Supply & Flipped Demand)")
+    "Select Setup Direction",
+    ("🟢 Bullish (Buy Setups)", "🔴 Bearish (Sell Setups)")
 )
 
-st.sidebar.header("📐 Zone Settings")
+st.sidebar.header("🔄 Zone Type to Scan")
+zone_filter = st.sidebar.radio(
+    "Filter by Zone History",
+    (
+        "All Zones (Standard + Flipped)", 
+        "Standard Zones Only", 
+        "Flipped Zones Only (Role Reversal)"
+    )
+)
+
+st.sidebar.header("📐 Base Settings")
 min_base, max_base = st.sidebar.slider("Number of Base Candles (Min - Max)", min_value=1, max_value=5, value=(1, 3))
 base_body_pct = st.sidebar.slider("Max Boring Candle Body %", min_value=10, max_value=60, value=40, 
-                                  help="40% means the body is max 40% of the total candle range.")
-
-st.sidebar.header("🔓 Volume Rules")
-require_low_vol = st.sidebar.checkbox("✅ Require Lower Volume on Retracement", value=True, 
-                                      help="If checked, the pullback volume MUST be strictly lower than the breakout volume.")
+                                  help="The body must be max 40% of the total candle range.")
 
 # ==========================================
 # 2. DATA FETCHER (FIREWALL-PROOF)
@@ -86,7 +92,7 @@ def get_index_tickers(sector_name):
     return []
 
 # ==========================================
-# 3. CORE LOGIC: ZONE CALCULATION & FLIPS
+# 3. CORE LOGIC: ULTRA-STRICT BASES
 # ==========================================
 def resample_to_75m(df):
     """Converts 15-minute data into 75-minute data matching the Indian market open."""
@@ -99,12 +105,15 @@ def resample_to_75m(df):
     }).dropna()
     return resampled
 
-def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol):
+def check_setup(df, dir_choice, zone_choice, min_b, max_b, body_pct, buffer_pct, max_candle_range_pct):
     df = df.dropna()
     if len(df) < 30: return None 
         
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
+    
+    # Calculate Total Candle Size as a percentage of the closing price
+    df['Candle_Size_Pct'] = (df['Range'] / df['Close']) * 100
     
     is_bullish = "Bullish" in dir_choice
     current = df.iloc[-1]
@@ -118,12 +127,11 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
         for bases in range(min_b, max_b + 1):
             if setup_found: break 
             
-            # A. Evaluate Leg-In (Candle before the base)
             leg_in_idx = i - 1
             leg_in_is_green = df['Close'].iloc[leg_in_idx] > df['Open'].iloc[leg_in_idx]
-            leg_in_type = "R" if leg_in_is_green else "D" # Rally or Drop
+            leg_in_type = "R" if leg_in_is_green else "D" 
             
-            # B. Check if Base Candles are "Boring"
+            # A. ULTRA-STRICT BASE VERIFICATION
             base_valid = True
             for b in range(bases):
                 idx = i + b
@@ -131,20 +139,27 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
                     base_valid = False
                     break
                 
+                # Rule 1: Body must be < X% of the range (Shape)
                 candle_body_pct = (df['Body'].iloc[idx] / df['Range'].iloc[idx]) * 100
                 if candle_body_pct > body_pct:
+                    base_valid = False
+                    break
+                    
+                # Rule 2: Total candle size must be STRICTLY smaller than timeframe limit (Size)
+                if df['Candle_Size_Pct'].iloc[idx] > max_candle_range_pct:
                     base_valid = False
                     break
                     
             if not base_valid:
                 continue
                 
-            # C. Evaluate Leg-Out Strength & Close
+            # B. Leg-Out Strength & Close
             leg_idx = i + bases
             leg_is_green = df['Close'].iloc[leg_idx] > df['Open'].iloc[leg_idx]
             leg_range = df['Range'].iloc[leg_idx]
             leg_body_pct = (df['Body'].iloc[leg_idx] / leg_range) * 100 if leg_range > 0 else 0
             
+            # Leg out must be a strong momentum candle
             if leg_body_pct < 50:
                 continue
                 
@@ -152,29 +167,25 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
             highest_base = base_slice['High'].max()
             lowest_base = base_slice['Low'].min()
             
-            # D. Categorize the Zone
+            # C. Categorize the Zone
             if leg_is_green and df['Close'].iloc[leg_idx] > highest_base:
                 # Demand Zone
-                pattern = f"{leg_in_type}BR" # RBR or DBR
                 all_historical_zones.append({
-                    'type': pattern,
+                    'type': f"{leg_in_type}BR",
                     'category': 'Demand',
                     'proximal': highest_base,  
                     'distal': lowest_base,     
-                    'breakout_vol': df['Volume'].iloc[leg_idx],
                     'index': leg_idx
                 })
                 setup_found = True
                 
             elif not leg_is_green and df['Close'].iloc[leg_idx] < lowest_base:
                 # Supply Zone
-                pattern = f"{leg_in_type}BD" # RBD or DBD
                 all_historical_zones.append({
-                    'type': pattern,
+                    'type': f"{leg_in_type}BD",
                     'category': 'Supply',
                     'proximal': lowest_base,   
                     'distal': highest_base,    
-                    'breakout_vol': df['Volume'].iloc[leg_idx],
                     'index': leg_idx
                 })
                 setup_found = True
@@ -183,33 +194,28 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
     active_target_zones = []
     
     for z in all_historical_zones:
-        future_data = df.iloc[z['index']+1 : -1] # Up to yesterday
+        future_data = df.iloc[z['index']+1 : -1] 
         
         if z['category'] == 'Demand':
             if len(future_data) == 0:
                 if is_bullish: active_target_zones.append(z)
                 continue
                 
-            # Did it break downside?
             broken_downside = future_data[future_data['Close'] < z['distal']]
             
             if broken_downside.empty:
-                # Unbroken Demand Zone
                 if is_bullish: active_target_zones.append(z)
             else:
-                # Flipped to Supply Zone
                 if not is_bullish:
                     break_idx = broken_downside.index[0]
                     post_flip = df.loc[break_idx+1 : current.name - pd.Timedelta(days=1)]
                     
-                    # Ensure it wasn't re-broken upside after flipping
                     if post_flip.empty or not (post_flip['Close'] > z['proximal']).any():
                         active_target_zones.append({
                             'type': f"Flipped {z['type']}",
                             'category': 'Supply',
-                            'proximal': z['distal'], # Old bottom becomes new entry
-                            'distal': z['proximal'], # Old top becomes new SL
-                            'breakout_vol': df['Volume'].loc[break_idx],
+                            'proximal': z['distal'], 
+                            'distal': z['proximal'], 
                             'index': break_idx
                         })
                         
@@ -218,63 +224,61 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
                 if not is_bullish: active_target_zones.append(z)
                 continue
                 
-            # Did it break upside?
             broken_upside = future_data[future_data['Close'] > z['distal']]
             
             if broken_upside.empty:
-                # Unbroken Supply Zone
                 if not is_bullish: active_target_zones.append(z)
             else:
-                # Flipped to Demand Zone
                 if is_bullish:
                     break_idx = broken_upside.index[0]
                     post_flip = df.loc[break_idx+1 : current.name - pd.Timedelta(days=1)]
                     
-                    # Ensure it wasn't re-broken downside after flipping
                     if post_flip.empty or not (post_flip['Close'] < z['proximal']).any():
                         active_target_zones.append({
                             'type': f"Flipped {z['type']}",
                             'category': 'Demand',
-                            'proximal': z['distal'], # Old top becomes new entry
-                            'distal': z['proximal'], # Old bottom becomes new SL
-                            'breakout_vol': df['Volume'].loc[break_idx],
+                            'proximal': z['distal'], 
+                            'distal': z['proximal'], 
                             'index': break_idx
                         })
 
-    if not active_target_zones: return None
+    # 3. FILTER BY USER'S ZONE CHOICE
+    filtered_zones = []
+    for z in active_target_zones:
+        is_flipped = "Flipped" in z['type']
+        
+        if "Standard" in zone_choice and is_flipped: continue
+        if "Flipped" in zone_choice and not is_flipped: continue
+            
+        filtered_zones.append(z)
+
+    if not filtered_zones: return None
     
-    # 3. LIVE PRICE PROXIMITY & VOLUME CHECK
+    # 4. STRICT LIVE PRICE PROXIMITY
     buffer_mult_bull = 1 + (buffer_pct / 100)
     buffer_mult_bear = 1 - (buffer_pct / 100)
     
-    for z in reversed(active_target_zones): 
+    for z in reversed(filtered_zones): 
         in_zone = False
         
-        if is_bullish: # Checking Active Demand or Flipped Supply
-            low_tapped = current['Low'] <= (z['proximal'] * buffer_mult_bull)
+        if is_bullish: 
+            # LIVE CLOSE must be strictly >= Distal and <= (Proximal + Buffer)
             close_held = current['Close'] >= z['distal']
             close_near = current['Close'] <= (z['proximal'] * buffer_mult_bull)
-            in_zone = low_tapped and close_held and close_near
-        else: # Checking Active Supply or Flipped Demand
-            high_tapped = current['High'] >= (z['proximal'] * buffer_mult_bear)
+            in_zone = close_held and close_near
+        else: 
+            # LIVE CLOSE must be strictly <= Distal and >= (Proximal - Buffer)
             close_held = current['Close'] <= z['distal']
             close_near = current['Close'] >= (z['proximal'] * buffer_mult_bear)
-            in_zone = high_tapped and close_held and close_near
+            in_zone = close_held and close_near
 
-        # Volume Condition
-        vol_passed = True
-        if req_low_vol:
-            if current['Volume'] >= z['breakout_vol']:
-                vol_passed = False
-
-        if in_zone and vol_passed:
+        if in_zone:
             risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
             
-            # Status Text
             if is_bullish:
-                status = "✅ IN ZONE" if current['Close'] <= z['proximal'] else f"⏳ NEAR ZONE (<{buffer_pct}%)"
+                status = "✅ IN ZONE" if current['Close'] <= z['proximal'] else f"⏳ NEAR ZONE"
             else:
-                status = "✅ IN ZONE" if current['Close'] >= z['proximal'] else f"⏳ NEAR ZONE (<{buffer_pct}%)"
+                status = "✅ IN ZONE" if current['Close'] >= z['proximal'] else f"⏳ NEAR ZONE"
             
             return {
                 "Pattern": z['type'],
@@ -282,14 +286,13 @@ def check_setup(df, dir_choice, min_b, max_b, body_pct, buffer_pct, req_low_vol)
                 "Zone Entry": round(z['proximal'], 2),
                 "Stop Loss": round(z['distal'], 2),
                 "Risk %": f"{risk_pct:.2f}%",
-                "Vol Dry-Up": "✅ Yes" if current['Volume'] < z['breakout_vol'] else "❌ No",
                 "Status": status
             }
             
     return None
 
 # ==========================================
-# 4. EXECUTION ENGINE
+# 5. EXECUTION ENGINE
 # ==========================================
 if st.sidebar.button(f"Launch Scanner", type="primary"):
     
@@ -297,15 +300,24 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        # Determine Dynamic Buffer based on Timeframe
+        # Determine Dynamic Proximity Buffer based on Timeframe
         dynamic_buffer = {
             "75m": 0.5,
             "1d": 2.0,
             "1wk": 3.0,
             "1mo": 5.0
         }.get(timeframe, 2.0)
+
+        # STRICT MAXIMUM CANDLE SIZE (Total High to Low Range)
+        max_candle_range = {
+            "75m": 2.0,  # Max 2% move
+            "1d": 5.0,   # Max 5% move
+            "1wk": 10.0, # Max 10% move
+            "1mo": 15.0  # Max 15% move
+        }.get(timeframe, 5.0)
         
-        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {direction[:2]} patterns on the {selected_tf_label} timeframe (Dynamic Buffer: {dynamic_buffer}%)...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Hunting for {direction[:2]} patterns on {selected_tf_label}.")
+        st.caption(f"Strict Timeframe Rules Applied -> Max Base Size: {max_candle_range}% | Entry Buffer: {dynamic_buffer}%")
         
         if timeframe == '75m':
             fetch_period = "60d" 
@@ -334,11 +346,18 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
                     if timeframe == '75m':
                         df = resample_to_75m(df)
                         
-                    setup = check_setup(df, direction, min_base, max_base, base_body_pct, dynamic_buffer, require_low_vol)
+                    setup = check_setup(df, direction, zone_filter, min_base, max_base, base_body_pct, dynamic_buffer, max_candle_range)
                     
                     if setup:
-                        setup['Ticker'] = ticker.replace(".NS", "")
-                        results.append(setup)
+                        results.append({
+                            'Ticker': ticker.replace(".NS", ""),
+                            'Pattern': setup['Pattern'],
+                            'Live Price': setup['Live Price'],
+                            'Zone Entry': setup['Zone Entry'],
+                            'Stop Loss': setup['Stop Loss'],
+                            'Risk %': setup['Risk %'],
+                            'Status': setup['Status']
+                        })
             except:
                 pass
                 
@@ -348,16 +367,15 @@ if st.sidebar.button(f"Launch Scanner", type="primary"):
         progress_bar.empty()
         
         # ==========================================
-        # 5. RESULTS DISPLAY
+        # 6. RESULTS DISPLAY
         # ==========================================
         st.subheader(f"📊 {direction[:2]} Scan Results ({selected_tf_label})")
         
         if results:
             final_df = pd.DataFrame(results)
-            # Reorder columns for readability
-            cols = ['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'Vol Dry-Up', 'Status']
+            cols = ['Ticker', 'Pattern', 'Live Price', 'Zone Entry', 'Stop Loss', 'Risk %', 'Status']
             final_df = final_df[cols]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success(f"Scan Complete. Found stocks actively testing labeled zones within your {dynamic_buffer}% timeframe allowance.")
+            st.success(f"Scan Complete. Found stocks strictly adhering to the small-candle constraints and active entry zones.")
         else:
-            st.warning(f"No stocks found matching the criteria right now within the {dynamic_buffer}% allowance.")
+            st.warning(f"No stocks found. The strictly capped candle size limits ({max_candle_range}%) filtered out all false setups.")
