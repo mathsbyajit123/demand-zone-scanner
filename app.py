@@ -16,6 +16,7 @@ st.markdown("Scans for stocks interacting with the 44 EMA or 200 EMA. Tolerates 
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
+    "F&O Stocks (~208)",
     "Nifty 50",
     "Nifty 500",
     "Nifty Midcap 100",
@@ -23,7 +24,7 @@ sector_options = [
     "Nifty IT",
     "Nifty Auto"
 ]
-selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options, index=1)
+selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options, index=0)
 
 timeframe_options = {
     "1 Day": "1d",
@@ -64,6 +65,33 @@ cross_allowance = st.sidebar.slider(
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
+    # If the user selects F&O, load the hardcoded high-liquidity F&O universe
+    if "F&O" in sector_name:
+        fo_stocks = [
+            "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
+            "ALKEM", "AMBUJACEM", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", 
+            "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", 
+            "BATAINDIA", "BEL", "BERGEPAINT", "BHARATFORG", "BHARTIARTL", "BHEL", "BIOCON", "BOSCHLTD", "BPCL", 
+            "BRITANNIA", "BSOFT", "CANBK", "CANFINHOME", "CHAMBLFERT", "CHOLAFIN", "CIPLA", "COALINDIA", "COFORGE", 
+            "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON", "CUB", "CUMMINSIND", "DABUR", "DALBHARAT", "DEEPAKNTR", 
+            "DIVISLAB", "DIXON", "DLF", "DRREDDY", "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK", "GAIL", 
+            "GLENMARK", "GMRINFRA", "GNFC", "GODREJCP", "GODREJPROP", "GRANULES", "GRASIM", "GUJGASLTD", "HAL", 
+            "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO", "HINDALCO", "HINDCOPPER", "HINDPETRO", 
+            "HINDUNILVR", "ICICIBANK", "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", 
+            "INDIACEM", "INDIAMART", "INDIGO", "INDUSINDBK", "INDUSTOWER", "INFY", "INTELLECT", "IOC", "IPCALAB", 
+            "IRCTC", "ITC", "JINDALSTEL", "JKCEMENT", "JSWSTEEL", "JUBLFOOD", "KOTAKBANK", "LALPATHLAB", "LAURUSLABS", 
+            "LICHSGFIN", "LT", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN", "MANAPPURAM", "MARICO", "MARUTI", 
+            "MCDOWELL-N", "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MPHASIS", "MRF", "MUTHOOTFIN", "NATIONALUM", 
+            "NAUKRI", "NAVINFLUOR", "NESTLEIND", "NMDC", "NTPC", "OBEROIRLTY", "OFSS", "ONGC", "PAGEIND", "PEL", 
+            "PERSISTENT", "PETRONET", "PFC", "PIDILITIND", "PIIND", "PNB", "POLYCAB", "POWERGRID", "PVRINOX", 
+            "RAMCOCEM", "RBLBANK", "RECLTD", "RELIANCE", "SAIL", "SBICARD", "SBILIFE", "SBIN", "SHREECEM", "SHRIRAMFIN", 
+            "SIEMENS", "SRF", "SUNPHARMA", "SUNTV", "SYNGENE", "TATACHEM", "TATACOMM", "TATACONSUM", "TATAMOTORS", 
+            "TATAPOWER", "TATASTEEL", "TCS", "TECHM", "TITAN", "TORNTPHARM", "TORNTPOWER", "TRENT", "TVSMOTOR", 
+            "UBL", "ULTRACEMCO", "UPLLTD", "VEDL", "VOLTAS", "WIPRO", "ZEEL", "ZYDUSLIFE"
+        ]
+        return [f"{ticker}.NS" for ticker in fo_stocks]
+
+    # For other indices, fetch from CSV mirrors
     csv_file = {
         "Nifty 50": "ind_nifty50list.csv",
         "Nifty 500": "ind_nifty500list.csv",
@@ -157,7 +185,7 @@ def check_ema_setup(df, dir_choice, ema_choice, approach_pct, cross_pct):
     if not matched_emas:
         return None
         
-    # If multiple EMAs match, just take the first one (or format a string for both)
+    # If multiple EMAs match, just take the first one
     primary_match = matched_emas[0]
     
     # Determine visual status based on close price vs EMA
