@@ -12,11 +12,12 @@ warnings.filterwarnings('ignore')
 # ==========================================
 st.set_page_config(page_title="EMA Proximity Scanner", layout="wide")
 st.title("🎯 Pure EMA Proximity & Bounce Scanner")
-st.markdown("Scans for stocks interacting with the 44 EMA or 200 EMA. Tolerates wicks and slight crosses based on your exact settings.")
+st.markdown("Scans for stocks interacting with the 44 EMA or 200 EMA. Features dynamic F&O vs. Cash Segment separation.")
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
-    "F&O Stocks (~208)",
+    "F&O Stocks (~223+)",
+    "Non-F&O Stocks (Nifty 500 base)",
     "Nifty 50",
     "Nifty 500",
     "Nifty Midcap 100",
@@ -61,40 +62,48 @@ cross_allowance = st.sidebar.slider(
 )
 
 # ==========================================
-# 2. DATA FETCHER
+# 2. DATA FETCHER (F&O vs NON-F&O LOGIC)
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    # If the user selects F&O, load the hardcoded high-liquidity F&O universe
-    if "F&O" in sector_name:
-        fo_stocks = [
-            "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
-            "ALKEM", "AMBUJACEM", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", 
-            "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJFINANCE", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", 
-            "BATAINDIA", "BEL", "BERGEPAINT", "BHARATFORG", "BHARTIARTL", "BHEL", "BIOCON", "BOSCHLTD", "BPCL", 
-            "BRITANNIA", "BSOFT", "CANBK", "CANFINHOME", "CHAMBLFERT", "CHOLAFIN", "CIPLA", "COALINDIA", "COFORGE", 
-            "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON", "CUB", "CUMMINSIND", "DABUR", "DALBHARAT", "DEEPAKNTR", 
-            "DIVISLAB", "DIXON", "DLF", "DRREDDY", "EICHERMOT", "ESCORTS", "EXIDEIND", "FEDERALBNK", "GAIL", 
-            "GLENMARK", "GMRINFRA", "GNFC", "GODREJCP", "GODREJPROP", "GRANULES", "GRASIM", "GUJGASLTD", "HAL", 
-            "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO", "HINDALCO", "HINDCOPPER", "HINDPETRO", 
-            "HINDUNILVR", "ICICIBANK", "ICICIGI", "ICICIPRULI", "IDEA", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", 
-            "INDIACEM", "INDIAMART", "INDIGO", "INDUSINDBK", "INDUSTOWER", "INFY", "INTELLECT", "IOC", "IPCALAB", 
-            "IRCTC", "ITC", "JINDALSTEL", "JKCEMENT", "JSWSTEEL", "JUBLFOOD", "KOTAKBANK", "LALPATHLAB", "LAURUSLABS", 
-            "LICHSGFIN", "LT", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN", "MANAPPURAM", "MARICO", "MARUTI", 
-            "MCDOWELL-N", "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MPHASIS", "MRF", "MUTHOOTFIN", "NATIONALUM", 
-            "NAUKRI", "NAVINFLUOR", "NESTLEIND", "NMDC", "NTPC", "OBEROIRLTY", "OFSS", "ONGC", "PAGEIND", "PEL", 
-            "PERSISTENT", "PETRONET", "PFC", "PIDILITIND", "PIIND", "PNB", "POLYCAB", "POWERGRID", "PVRINOX", 
-            "RAMCOCEM", "RBLBANK", "RECLTD", "RELIANCE", "SAIL", "SBICARD", "SBILIFE", "SBIN", "SHREECEM", "SHRIRAMFIN", 
-            "SIEMENS", "SRF", "SUNPHARMA", "SUNTV", "SYNGENE", "TATACHEM", "TATACOMM", "TATACONSUM", "TATAMOTORS", 
-            "TATAPOWER", "TATASTEEL", "TCS", "TECHM", "TITAN", "TORNTPHARM", "TORNTPOWER", "TRENT", "TVSMOTOR", 
-            "UBL", "ULTRACEMCO", "UPLLTD", "VEDL", "VOLTAS", "WIPRO", "ZEEL", "ZYDUSLIFE"
-        ]
-        return [f"{ticker}.NS" for ticker in fo_stocks]
-
-    # For other indices, fetch from CSV mirrors
+    # Master list of 223+ F&O stocks (Updated to include recent 2025/2026 additions)
+    fo_stocks_list = [
+        "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
+        "ADANIPOWER", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", 
+        "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJAJHLDNG", 
+        "BAJFINANCE", "BALKRISIND", "BALRAMCHIN", "BANDHANBNK", "BANKBARODA", "BANKINDIA", "BATAINDIA", "BDL", "BEL", 
+        "BERGEPAINT", "BHARATFORG", "BHARTIARTL", "BHEL", "BIOCON", "BLUESTARCO", "BOSCHLTD", "BPCL", "BRITANNIA", "BSE", 
+        "BSOFT", "CAMS", "CANBK", "CANFINHOME", "CDSL", "CEATLTD", "CGPOWER", "CHAMBLFERT", "CHOLAFIN", "CIPLA", 
+        "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL", "CONCOR", "COROMANDEL", "CROMPTON", "CUB", "CUMMINSIND", "CYIENT", 
+        "DABUR", "DALBHARAT", "DEEPAKNTR", "DIVISLAB", "DIXON", "DLF", "DRREDDY", "EICHERMOT", "ESCORTS", "EXIDEIND", 
+        "FEDERALBNK", "FORCEMOT", "FORTIS", "GAIL", "GLENMARK", "GMRINFRA", "GNFC", "GODFRYPHLP", "GODREJCP", "GODREJPROP", 
+        "GRANULES", "GRASIM", "GUJGASLTD", "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO", 
+        "HINDALCO", "HINDCOPPER", "HINDPETRO", "HINDUNILVR", "HUDCO", "HYUNDAI", "ICICIBANK", "ICICIGI", "ICICIPRULI", 
+        "IDEA", "IDFCFIRSTB", "IEX", "IGL", "INDHOTEL", "INDIACEM", "INDIAMART", "INDIGO", "INDUSINDBK", "INDUSTOWER", 
+        "INFY", "INTELLECT", "IOC", "IPCALAB", "IRCTC", "IRFC", "ITC", "JINDALSTEL", "JIOFIN", "JKCEMENT", "JSWENERGY", 
+        "JSWSTEEL", "JUBLFOOD", "KALYANKJIL", "KAYNES", "KEI", "KFINTECH", "KOTAKBANK", "KPITTECH", "LALPATHLAB", 
+        "LAURUSLABS", "LICHSGFIN", "LT", "LTIM", "LTTS", "LUPIN", "M&M", "M&MFIN", "MANAPPURAM", "MANKIND", "MARICO", 
+        "MARUTI", "MAXHEALTH", "MAZDOCK", "MCDOWELL-N", "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MOTILALOFS", 
+        "MPHASIS", "MRF", "MUTHOOTFIN", "NAM-INDIA", "NATIONALUM", "NAUKRI", "NAVINFLUOR", "NCC", "NESTLEIND", "NHPC", 
+        "NMDC", "NTPC", "NUVAMA", "OBEROIRLTY", "OFSS", "OIL", "ONGC", "ORACLE", "PAGEIND", "PEL", "PERSISTENT", 
+        "PETRONET", "PFC", "PGEL", "PHARMA", "PIDILITIND", "PIIND", "PNB", "POLYCAB", "POONAWALLA", "POWERGRID", 
+        "POWERINDIA", "PPLPHARMA", "PREMIERENE", "PRESTIGE", "PVRINOX", "RAMCOCEM", "RBLBANK", "RECLTD", "RELIANCE", 
+        "RVNL", "SAIL", "SAMMAANCAP", "SBICARD", "SBILIFE", "SBIN", "SHREECEM", "SHRIRAMFIN", "SIEMENS", "SJVN", 
+        "SONACOMS", "SRF", "SUNPHARMA", "SUNTV", "SUPREMEIND", "SUZLON", "SWIGGY", "SYNGENE", "TATACHEM", "TATACOMM", 
+        "TATACONSUM", "TATAELXSI", "TATAMOTORS", "TATAPOWER", "TATASTEEL", "TCS", "TECHM", "TITAN", "TORNTPHARM", 
+        "TORNTPOWER", "TRENT", "TVSMOTOR", "UBL", "ULTRACEMCO", "UNIONBANK", "UPLLTD", "VEDL", "VMM", "VOLTAS", 
+        "WAAREEENER", "WIPRO", "YESBANK", "ZEEL", "ZOMATO", "ZYDUSLIFE"
+    ]
+    
+    # If the user specifically selects F&O, return the hardcoded list immediately
+    if "F&O Stocks" in sector_name:
+        return [f"{ticker}.NS" for ticker in fo_stocks_list]
+        
+    # Otherwise, prepare to fetch the requested CSV index file
     csv_file = {
         "Nifty 50": "ind_nifty50list.csv",
         "Nifty 500": "ind_nifty500list.csv",
+        "Non-F&O Stocks (Nifty 500 base)": "ind_nifty500list.csv", # Fetch Nifty 500 to subtract from
         "Nifty Midcap 100": "ind_niftymidcap100list.csv",
         "Nifty Bank": "ind_niftybanklist.csv",
         "Nifty IT": "ind_niftyitlist.csv",
@@ -107,6 +116,7 @@ def get_index_tickers(sector_name):
         f"https://raw.githubusercontent.com/faizanahemad/data-science-utils/master/data_science_utils/financial/{csv_file}"
     ]
     
+    fetched_list = []
     for url in mirrors:
         try:
             response = requests.get(url, timeout=10)
@@ -114,12 +124,22 @@ def get_index_tickers(sector_name):
                 df = pd.read_csv(io.StringIO(response.text))
                 symbol_col = next((col for col in df.columns if 'Symbol' in col or 'SYMBOL' in col), None)
                 if symbol_col:
-                    return [str(s).strip() + ".NS" for s in df[symbol_col]]
+                    fetched_list = [str(s).strip() for s in df[symbol_col]]
+                    break # Stop if successful
         except Exception:
             continue
             
-    st.sidebar.error("⚠️ Unable to fetch ticker list.")
-    return []
+    if not fetched_list:
+        st.sidebar.error("⚠️ Unable to fetch ticker list.")
+        return []
+        
+    # The pure Non-F&O Extraction Engine
+    if "Non-F&O" in sector_name:
+        # Subtract any ticker present in the fo_stocks_list
+        non_fo_list = [ticker for ticker in fetched_list if ticker not in fo_stocks_list]
+        return [f"{ticker}.NS" for ticker in non_fo_list]
+        
+    return [f"{ticker}.NS" for ticker in fetched_list]
 
 # ==========================================
 # 3. CORE LOGIC: EMA PROXIMITY
@@ -185,7 +205,6 @@ def check_ema_setup(df, dir_choice, ema_choice, approach_pct, cross_pct):
     if not matched_emas:
         return None
         
-    # If multiple EMAs match, just take the first one
     primary_match = matched_emas[0]
     
     # Determine visual status based on close price vs EMA
