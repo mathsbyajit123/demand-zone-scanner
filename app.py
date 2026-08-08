@@ -3,65 +3,123 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
+import concurrent.futures
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. STREAMLIT UI & SETTINGS
+# 1. PREMIUM UI / UX & CUSTOM CSS
 # ==========================================
-st.set_page_config(page_title="Pure S&R Retest Scanner", layout="wide")
-st.title("⚡ Pure Support & Resistance (Break & Retest) Scanner")
-st.markdown("Scans strictly for major horizontal Swing Highs/Lows that were broken and are now being retested. Zero Supply/Demand mechanics.")
+st.set_page_config(page_title="Apex Pivot S&R Engine", layout="wide", initial_sidebar_state="expanded")
 
-st.sidebar.header("⚙️ Market Settings")
-sector_options = [
-    "F&O Stocks (~223+)",
-    "Non-F&O Stocks (Nifty 500 base)",
-    "Nifty 50",
-    "Nifty 500",
-    "Nifty Midcap 100",
-    "Nifty Bank"
-]
-selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options, index=0)
+# Injecting Custom CSS for a Professional Terminal Feel
+st.markdown("""
+    <style>
+    /* Main Background & Text */
+    .stApp {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+    
+    /* Gradient Title */
+    .gradient-text {
+        font-weight: 800;
+        font-size: 42px;
+        background: -webkit-linear-gradient(45deg, #00C6FF, #0072FF);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0px;
+        padding-bottom: 0px;
+    }
+    .sub-text {
+        font-size: 16px;
+        color: #8892B0;
+        margin-top: -10px;
+        margin-bottom: 30px;
+    }
 
-st.sidebar.header("⏱️ Timeframe Alignment")
-htf_options = {"6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d"}
-ltf_options = {"1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d", "75 Minutes (Intraday)": "75m"}
+    /* Styled Buttons */
+    div.stButton > button:first-child {
+        background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 12px 24px;
+        font-size: 18px;
+        font-weight: 600;
+        box-shadow: 0 4px 15px rgba(56, 239, 125, 0.4);
+        transition: all 0.3s ease;
+        width: 100%;
+    }
+    div.stButton > button:first-child:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(56, 239, 125, 0.6);
+    }
 
-htf_label = st.sidebar.selectbox("Higher Timeframe (HTF)", list(htf_options.keys()), index=2)
-ltf_label = st.sidebar.selectbox("Lower Timeframe (LTF) - Trading TF", list(ltf_options.keys()), index=2)
+    /* Sidebar Styling */
+    .css-1d391kg {
+        background-color: #1A1D24;
+    }
+    
+    /* Metric Cards */
+    div[data-testid="metric-container"] {
+        background-color: #1A1D24;
+        border-radius: 10px;
+        padding: 15px;
+        border: 1px solid #2D3748;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-htf = htf_options[htf_label]
-ltf = ltf_options[ltf_label]
-
-st.sidebar.header("📈 Trend & EMA Settings")
-require_htf_ema = st.sidebar.checkbox(
-    "✅ Require HTF Trend (44 > 200 EMA)", 
-    value=False, 
-    help="Uncheck if using 3M/6M HTF to bypass the 200 EMA data limit."
-)
-ltf_ema_filter = st.sidebar.radio(
-    "Require LTF EMA Support at S&R Line?",
-    ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA")
-)
-
-st.sidebar.header("🎯 Setup Direction")
-direction = st.sidebar.radio("Trade Setup", ("🟢 Bullish (Broken Resistance flipped to Support)", "🔴 Bearish (Broken Support flipped to Resistance)"))
-
-st.sidebar.header("📐 Swing Point Strictness")
-swing_length = st.sidebar.slider(
-    "Swing Point Strength (Candles)", 
-    min_value=3, max_value=15, value=5, 
-    help="How major the Support/Resistance level must be. '5' means the peak was higher than the 5 candles before and after it."
-)
-atr_multiplier = st.sidebar.slider("ATR Touch Hit-Box", min_value=0.1, max_value=2.0, value=0.5, step=0.1, help="How close the live price must get to the horizontal line to count as a retest.")
+st.markdown('<p class="gradient-text">APEX PIVOT ENGINE</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">High-Speed Support & Resistance Breakout/Retest Terminal</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. DATA FETCHER 
+# 2. SIDEBAR DASHBOARD
+# ==========================================
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2942/2942265.png", width=60)
+    st.markdown("### **Terminal Configuration**")
+    st.divider()
+
+    st.markdown("#### 🌍 Market Universe")
+    sector_options = [
+        "F&O Stocks (~223+)",
+        "Non-F&O Stocks (Nifty 500 base)",
+        "Nifty 50",
+        "Nifty 500",
+        "Nifty Midcap 100"
+    ]
+    selected_sector = st.selectbox("Select Asset Class", sector_options, index=0, label_visibility="collapsed")
+
+    st.markdown("#### ⏱️ Timeframe Architecture")
+    col1, col2 = st.columns(2)
+    with col1:
+        macro_options = {"6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d"}
+        macro_label = st.selectbox("Macro Trend", list(macro_options.keys()), index=2)
+        macro_tf = macro_options[macro_label]
+    with col2:
+        exec_options = {"1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d", "75 Min": "75m"}
+        exec_label = st.selectbox("Execution", list(exec_options.keys()), index=2)
+        exec_tf = exec_options[exec_label]
+
+    st.markdown("#### 🛡️ Trend Validation")
+    require_macro_ema = st.toggle("Require Macro 44>200 EMA", value=False)
+    exec_ema_filter = st.selectbox("Execution EMA Confluence", ["None (Pure PA)", "Near 44 EMA", "Near 200 EMA"])
+
+    st.markdown("#### 🎯 Execution Strategy")
+    direction = st.radio("Trade Vector", ("🟢 Long (Support Retest)", "🔴 Short (Resistance Retest)"))
+
+    st.markdown("#### ⚙️ Engine Tolerances")
+    swing_length = st.slider("Pivot Strength (Candles)", 3, 15, 5)
+    atr_multiplier = st.slider("ATR Hit-Box Buffer", 0.1, 2.0, 0.5, 0.1)
+
+# ==========================================
+# 3. DATA ARCHITECTURE
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    import requests, io
     fo_stocks_list = [
         "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
         "ADANIPOWER", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", 
@@ -93,8 +151,7 @@ def get_index_tickers(sector_name):
         
     csv_file = {
         "Nifty 50": "ind_nifty50list.csv", "Nifty 500": "ind_nifty500list.csv",
-        "Non-F&O Stocks (Nifty 500 base)": "ind_nifty500list.csv", "Nifty Midcap 100": "ind_niftymidcap100list.csv",
-        "Nifty Bank": "ind_niftybanklist.csv"
+        "Non-F&O Stocks (Nifty 500 base)": "ind_nifty500list.csv", "Nifty Midcap 100": "ind_niftymidcap100list.csv"
     }.get(sector_name, "ind_nifty500list.csv")
     
     mirrors = [
@@ -120,17 +177,13 @@ def get_index_tickers(sector_name):
     return [f"{ticker}.NS" for ticker in fetched_list]
 
 # ==========================================
-# 3. CORE LOGIC ENGINE (PURE S&R)
+# 4. MATH & SIGNAL LOGIC
 # ==========================================
 def resample_to_75m(df):
-    return df.resample('75min', offset='15min').agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-    }).dropna()
+    return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 def resample_macro(df, period):
-    return df.resample(period).agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-    }).dropna()
+    return df.resample(period).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 def calculate_atr(df, period=14):
     high_low = df['High'] - df['Low']
@@ -139,7 +192,7 @@ def calculate_atr(df, period=14):
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
     return np.max(ranges, axis=1).rolling(window=period).mean()
 
-def check_htf_trend(df, is_bullish):
+def check_macro_trend(df, is_bullish):
     if len(df) < 200: return False
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
@@ -147,13 +200,12 @@ def check_htf_trend(df, is_bullish):
     if is_bullish: return (curr['Close'] > curr['EMA_44']) and (curr['EMA_44'] > curr['EMA_200'])
     else: return (curr['Close'] < curr['EMA_44']) and (curr['EMA_44'] < curr['EMA_200'])
 
-def check_snr_retest(df, is_bullish, swing_len, atr_mult, ltf_ema_choice):
+def check_snr_retest(df, is_bullish, swing_len, atr_mult, ema_choice):
     if len(df) < 100: return None
     df['ATR'] = calculate_atr(df)
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
-    # Identify true Swing Highs and Swing Lows
     window = swing_len * 2 + 1
     df['Swing_High'] = df['High'][(df['High'] == df['High'].rolling(window, center=True).max())]
     df['Swing_Low'] = df['Low'][(df['Low'] == df['Low'].rolling(window, center=True).min())]
@@ -164,176 +216,154 @@ def check_snr_retest(df, is_bullish, swing_len, atr_mult, ltf_ema_choice):
     valid_setups = []
     
     if is_bullish:
-        # Look for old Resistance (Swing Highs) that were broken and are now Support
         swing_highs = df['Swing_High'].dropna()
-        
         for idx, resistance_price in swing_highs.items():
-            # Only look at swing highs that are not the absolute most recent candles
             if df.index.get_loc(idx) > len(df) - (swing_len + 3): continue
-                
             future_data = df.loc[idx:]
             
-            # 1. Was the Resistance broken? (Did price close above it?)
             breakouts = future_data[future_data['Close'] > resistance_price]
             if breakouts.empty: continue
             
             bos_idx = breakouts.index[0]
-            
-            # 2. Has the new Support been completely broken back down since the breakout?
             post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-            if not post_bos.empty and (post_bos['Close'] < resistance_price).any():
-                continue # Failed support, skip it
+            if not post_bos.empty and (post_bos['Close'] < resistance_price).any(): continue 
                 
-            # 3. Is the live price currently retesting this horizontal line?
             atr_allowance = current_atr * atr_mult
-            
-            is_testing = False
-            # Hit-box logic: Low touched the line, but close didn't break down
             if current['Low'] <= (resistance_price + atr_allowance) and current['Close'] >= resistance_price:
-                is_testing = True
-                
-            if is_testing:
-                # 4. EMA Confluence Check
                 ema_passed = True
-                ema_str = "N/A"
-                if "44" in ltf_ema_choice:
+                ema_str = "—"
+                if "44" in ema_choice:
                     ema_passed = (current['EMA_44'] >= resistance_price) and (current['EMA_44'] <= resistance_price + (current_atr * 2))
-                    ema_str = f"44 EMA: {current['EMA_44']:.2f}"
-                elif "200" in ltf_ema_choice:
+                    ema_str = f"{current['EMA_44']:.1f}"
+                elif "200" in ema_choice:
                     ema_passed = (current['EMA_200'] >= resistance_price) and (current['EMA_200'] <= resistance_price + (current_atr * 2))
-                    ema_str = f"200 EMA: {current['EMA_200']:.2f}"
+                    ema_str = f"{current['EMA_200']:.1f}"
                     
                 if ema_passed:
                     valid_setups.append({
-                        "Setup": "Broken Resistance ➔ New Support",
+                        "Signal": "🟢 Long Retest",
                         "Live Price": round(current['Close'], 2),
-                        "S&R Line": round(resistance_price, 2),
-                        "LTF EMA": ema_str,
-                        "Status": "🎯 Testing S&R Line"
+                        "Pivot Line": round(resistance_price, 2),
+                        "EMA Match": ema_str,
+                        "Status": "Active"
                     })
     else:
-        # Look for old Support (Swing Lows) that were broken and are now Resistance
         swing_lows = df['Swing_Low'].dropna()
-        
         for idx, support_price in swing_lows.items():
             if df.index.get_loc(idx) > len(df) - (swing_len + 3): continue
-                
             future_data = df.loc[idx:]
             
             breakdowns = future_data[future_data['Close'] < support_price]
             if breakdowns.empty: continue
             
             bos_idx = breakdowns.index[0]
-            
             post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-            if not post_bos.empty and (post_bos['Close'] > support_price).any():
-                continue 
+            if not post_bos.empty and (post_bos['Close'] > support_price).any(): continue 
                 
             atr_allowance = current_atr * atr_mult
-            
-            is_testing = False
             if current['High'] >= (support_price - atr_allowance) and current['Close'] <= support_price:
-                is_testing = True
-                
-            if is_testing:
                 ema_passed = True
-                ema_str = "N/A"
-                if "44" in ltf_ema_choice:
+                ema_str = "—"
+                if "44" in ema_choice:
                     ema_passed = (current['EMA_44'] <= support_price) and (current['EMA_44'] >= support_price - (current_atr * 2))
-                    ema_str = f"44 EMA: {current['EMA_44']:.2f}"
-                elif "200" in ltf_ema_choice:
+                    ema_str = f"{current['EMA_44']:.1f}"
+                elif "200" in ema_choice:
                     ema_passed = (current['EMA_200'] <= support_price) and (current['EMA_200'] >= support_price - (current_atr * 2))
-                    ema_str = f"200 EMA: {current['EMA_200']:.2f}"
+                    ema_str = f"{current['EMA_200']:.1f}"
                     
                 if ema_passed:
                     valid_setups.append({
-                        "Setup": "Broken Support ➔ New Resistance",
+                        "Signal": "🔴 Short Retest",
                         "Live Price": round(current['Close'], 2),
-                        "S&R Line": round(support_price, 2),
-                        "LTF EMA": ema_str,
-                        "Status": "🎯 Testing S&R Line"
+                        "Pivot Line": round(support_price, 2),
+                        "EMA Match": ema_str,
+                        "Status": "Active"
                     })
 
-    if valid_setups:
-        # Return the most recent valid setup
-        return valid_setups[-1]
+    if valid_setups: return valid_setups[-1]
     return None
 
 # ==========================================
-# 4. HIGH-SPEED BATCH ENGINE 
+# 5. EXECUTION & DASHBOARD METRICS
 # ==========================================
-if st.sidebar.button("⚡ Launch S&R Scanner", type="primary"):
-    is_bull_setup = "Bullish" in direction
+col1, col2, col3 = st.columns([1, 1, 1])
+
+if st.button("🚀 INITIATE APEX SCAN", type="primary"):
+    is_bull_setup = "Long" in direction
     
-    with st.spinner(f"Fetching {selected_sector} list..."):
+    with st.spinner("Establishing Secure Connection & Fetching Market Universe..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Executing High-Speed Pure S&R Scan...")
-        
-        htf_period_val = "max" if htf in ['3mo', '6mo'] else "10y"
-        htf_interval_val = "1mo" if htf in ['3mo', '6mo'] else htf
-        
-        ltf_period_val = {"1mo": "15y", "1wk": "10y", "1d": "5y", "75m": "60d"}.get(ltf, "5y")
-        ltf_interval_val = "15m" if ltf == "75m" else ltf
+        # Dashboard Metrics Update
+        with col1: st.metric("Universe Loaded", f"{len(ticker_list)} Assets")
+        with col2: st.metric("Macro Trend Filter", f"{'Enabled' if require_macro_ema else 'Disabled'}")
+        with col3: st.metric("Status", "Processing Packets...")
+
+        macro_period_val = "max" if macro_tf in ['3mo', '6mo'] else "10y"
+        macro_interval_val = "1mo" if macro_tf in ['3mo', '6mo'] else macro_tf
+        exec_period_val = {"1mo": "15y", "1wk": "10y", "1d": "5y", "75m": "60d"}.get(exec_tf, "5y")
+        exec_interval_val = "15m" if exec_tf == "75m" else exec_tf
         
         tickers_str = " ".join(ticker_list)
         
         progress_bar = st.progress(10)
-        status_text = st.empty()
         
-        htf_data = None
-        if require_htf_ema:
-            status_text.text("📥 Payload 1/2: Downloading Higher Timeframe Market Data...")
-            htf_data = yf.download(tickers_str, period=htf_period_val, interval=htf_interval_val, group_by='ticker', threads=True, show_errors=False)
+        macro_data = None
+        if require_macro_ema:
+            macro_data = yf.download(tickers_str, period=macro_period_val, interval=macro_interval_val, group_by='ticker', threads=True, show_errors=False)
             
         progress_bar.progress(50)
-        status_text.text("📥 Payload 2/2: Downloading Lower Timeframe Market Data...")
-        ltf_data = yf.download(tickers_str, period=ltf_period_val, interval=ltf_interval_val, group_by='ticker', threads=True, show_errors=False)
+        exec_data = yf.download(tickers_str, period=exec_period_val, interval=exec_interval_val, group_by='ticker', threads=True, show_errors=False)
         
         progress_bar.progress(85)
-        status_text.text("🧠 Processing Pure Horizontal Support & Resistance Logic...")
         
         results = []
-        
         for ticker in ticker_list:
             try:
-                htf_passed = True
+                macro_passed = True
                 
-                if require_htf_ema and htf_data is not None:
-                    htf_passed = False
-                    df_htf = htf_data if len(ticker_list) == 1 else htf_data[ticker]
-                    df_htf = df_htf.dropna()
+                if require_macro_ema and macro_data is not None:
+                    macro_passed = False
+                    df_macro = macro_data if len(ticker_list) == 1 else macro_data[ticker]
+                    df_macro = df_macro.dropna()
                     
-                    if not df_htf.empty:
-                        if htf == '3mo': df_htf = resample_macro(df_htf, '3ME')
-                        if htf == '6mo': df_htf = resample_macro(df_htf, '6ME')
-                        if len(df_htf) > 200:
-                            htf_passed = check_htf_trend(df_htf, is_bull_setup)
+                    if not df_macro.empty:
+                        if macro_tf == '3mo': df_macro = resample_macro(df_macro, '3ME')
+                        if macro_tf == '6mo': df_macro = resample_macro(df_macro, '6ME')
+                        if len(df_macro) > 200:
+                            macro_passed = check_macro_trend(df_macro, is_bull_setup)
                 
-                if htf_passed:
-                    df_ltf = ltf_data if len(ticker_list) == 1 else ltf_data[ticker]
-                    df_ltf = df_ltf.dropna()
+                if macro_passed:
+                    df_exec = exec_data if len(ticker_list) == 1 else exec_data[ticker]
+                    df_exec = df_exec.dropna()
                     
-                    if not df_ltf.empty:
-                        if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
-                        
-                        setup = check_snr_retest(df_ltf, is_bull_setup, swing_length, atr_multiplier, ltf_ema_filter)
+                    if not df_exec.empty:
+                        if exec_tf == '75m': df_exec = resample_to_75m(df_exec)
+                        setup = check_snr_retest(df_exec, is_bull_setup, swing_length, atr_multiplier, exec_ema_filter)
                         if setup:
-                            setup['Ticker'] = ticker.replace(".NS", "")
+                            setup['Asset'] = ticker.replace(".NS", "")
                             results.append(setup)
                             
             except Exception:
                 pass
                 
         progress_bar.progress(100)
-        status_text.empty()
         progress_bar.empty()
         
-        st.subheader(f"📊 Pure S&R Break & Retest Results")
+        st.divider()
+        st.markdown("### 📊 Active Execution Signals")
+        
         if results:
-            final_df = pd.DataFrame(results)[['Ticker', 'Setup', 'Live Price', 'S&R Line', 'LTF EMA', 'Status']]
-            st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Lightning Batch Scan Complete. Horizontal Pivot Support/Resistance isolates found.")
+            final_df = pd.DataFrame(results)[['Asset', 'Signal', 'Live Price', 'Pivot Line', 'EMA Match', 'Status']]
+            
+            # Apply styling to the dataframe
+            styled_df = final_df.style.set_properties(**{
+                'background-color': '#1A1D24',
+                'color': '#FAFAFA',
+                'border-color': '#2D3748'
+            }).map(lambda v: 'color: #00e676; font-weight: bold;' if 'Long' in str(v) else ('color: #ff5252; font-weight: bold;' if 'Short' in str(v) else ''), subset=['Signal'])
+            
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
         else:
-            st.warning("0 matches. No stocks are currently retesting a major horizontal swing pivot under your parameters.")
+            st.info("No active signals found matching the current terminal parameters.")
