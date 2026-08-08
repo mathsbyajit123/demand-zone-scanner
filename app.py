@@ -5,15 +5,16 @@ import numpy as np
 import requests
 import io
 import warnings
+import concurrent.futures
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="Strict Trend & 2-Leg S&D Scanner", layout="wide")
-st.title("🎯 Strict HTF Trend + 2-Leg Marubozu Scanner")
-st.markdown("Requires HTF Trend (Price > 44 EMA > 200 EMA) + LTF Zone (Squeeze Base + Two 80% Marubozu Leg-Outs).")
+st.set_page_config(page_title="High-Speed MTF S&D Scanner", layout="wide")
+st.title("⚡ High-Speed MTF S&D Scanner")
+st.markdown("Features 3M/6M Macro tracking, HTF trend filtering, strict LTF Marubozu breakouts, and multithreaded execution for rapid scanning.")
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
@@ -27,14 +28,27 @@ sector_options = [
 selected_sector = st.sidebar.selectbox("Select Sector / Index", sector_options, index=0)
 
 st.sidebar.header("⏱️ Timeframe Alignment")
-htf_options = {"1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d"}
-ltf_options = {"1 Week": "1wk", "1 Day": "1d", "75 Minutes (Intraday)": "75m"}
+htf_options = {"6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d"}
+ltf_options = {"1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d", "75 Minutes (Intraday)": "75m"}
 
-htf_label = st.sidebar.selectbox("Higher Timeframe (HTF) - Trend Filter", list(htf_options.keys()), index=0)
-ltf_label = st.sidebar.selectbox("Lower Timeframe (LTF) - Zone Entry", list(ltf_options.keys()), index=1)
+htf_label = st.sidebar.selectbox("Higher Timeframe (HTF)", list(htf_options.keys()), index=2)
+ltf_label = st.sidebar.selectbox("Lower Timeframe (LTF)", list(ltf_options.keys()), index=2)
 
 htf = htf_options[htf_label]
 ltf = ltf_options[ltf_label]
+
+st.sidebar.header("📈 EMA Settings")
+require_htf_ema = st.sidebar.checkbox(
+    "✅ Require HTF Trend (44 > 200 EMA)", 
+    value=False, 
+    help="Uncheck if using 3M or 6M HTF, as 200 EMAs require 50-100 years of data."
+)
+
+ltf_ema_filter = st.sidebar.radio(
+    "Require LTF EMA Confluence at Zone?",
+    ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA"),
+    help="Forces the selected EMA to physically pass through or sit right next to the LTF Demand/Supply zone."
+)
 
 st.sidebar.header("🎯 Setup Direction")
 direction = st.sidebar.radio("Direction", ("🟢 Bullish (Long)", "🔴 Bearish (Short)"))
@@ -50,9 +64,9 @@ proximity_filter = st.sidebar.radio(
 )
 
 st.sidebar.header("📐 Base & Breakout Strictness")
-max_base_candles = st.sidebar.slider("Max Base Candles (Squeeze)", min_value=1, max_value=3, value=3, help="Max base candles allowed before the breakout.")
-base_body_pct = st.sidebar.slider("Max Base Body % (Shrink Type)", min_value=10, max_value=50, value=45, help="Ensures base candles are tight/doji-like.")
-legout_body_pct = st.sidebar.slider("Min Leg-Out Body % (Marubozu)", min_value=60, max_value=95, value=80, help="Forces the 2 breakout candles to be massive.")
+max_base_candles = st.sidebar.slider("Max Base Candles (Squeeze)", min_value=1, max_value=3, value=3)
+base_body_pct = st.sidebar.slider("Max Base Body % (Shrink Type)", min_value=10, max_value=50, value=45)
+legout_body_pct = st.sidebar.slider("Min Leg-Out Body % (Marubozu)", min_value=60, max_value=95, value=80)
 
 st.sidebar.header("🧲 Execution Hit-Box")
 atr_multiplier = st.sidebar.slider("ATR Pullback Allowance", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
@@ -120,10 +134,15 @@ def get_index_tickers(sector_name):
     return [f"{ticker}.NS" for ticker in fetched_list]
 
 # ==========================================
-# 3. CORE LOGIC ENGINE
+# 3. CORE LOGIC ENGINE & MACRO RESAMPLERS
 # ==========================================
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna()
+
+def resample_macro(df, period):
+    return df.resample(period).agg({
         'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
     }).dropna()
 
@@ -135,12 +154,10 @@ def calculate_atr(df, period=14):
     return np.max(ranges, axis=1).rolling(window=period).mean()
 
 def check_htf_trend(df, is_bullish):
-    """Checks: Close > 44 EMA > 200 EMA"""
-    if len(df) < 200: return False # Need 200 periods for the 200 EMA
+    if len(df) < 200: return False
     
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    
     curr = df.iloc[-1]
     
     if is_bullish:
@@ -148,20 +165,21 @@ def check_htf_trend(df, is_bullish):
     else:
         return (curr['Close'] < curr['EMA_44']) and (curr['EMA_44'] < curr['EMA_200'])
 
-def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, prox_filter):
-    """LTF Zone: Squeeze Base (max 3) + 2 Strong Marubozu Leg-outs"""
-    if len(df) < 50: return None
+def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, prox_filter, ltf_ema_choice):
+    if len(df) < 200: return None
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
     df['ATR'] = calculate_atr(df)
+    
+    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
     current = df.iloc[-1]
     current_atr = current['ATR'] if not pd.isna(current['ATR']) else current['Range']
     
     valid_zones = []
     
-    # SCAN FOR SQUEEZE BASES + 2 MARUBOZU LEG-OUTS
-    for i in range(10, len(df) - 3): # Need space for base + leg1 + leg2
+    for i in range(10, len(df) - 3):
         for bases in range(1, max_bases + 1):
             base_slice = df.iloc[i : i + bases]
             leg1_idx = i + bases
@@ -169,7 +187,6 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
             
             if leg2_idx >= len(df) - 1: break
                 
-            # 1. Base verification (Squeeze / Shrink)
             base_valid = True
             for _, candle in base_slice.iterrows():
                 if candle['Range'] == 0 or ((candle['Body'] / candle['Range']) * 100 > base_pct):
@@ -180,7 +197,6 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
             base_high = base_slice['High'].max()
             base_low = base_slice['Low'].min()
             
-            # 2. Leg-Out verification (2 Healthy Marubozu Candles)
             leg1 = df.iloc[leg1_idx]
             leg2 = df.iloc[leg2_idx]
             
@@ -195,13 +211,11 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
             leg2_green = leg2['Close'] > leg2['Open']
             
             if is_bullish:
-                # Must be 2 green explosive candles clearing the base
                 if leg1_green and leg2_green and (leg1['Close'] > base_high) and (leg2['Close'] > leg1['Close']):
                     valid_zones.append({
                         'type': 'Demand', 'proximal': base_high, 'distal': base_low, 'index': leg2_idx
                     })
             else:
-                # Must be 2 red explosive candles clearing the base
                 if not leg1_green and not leg2_green and (leg1['Close'] < base_low) and (leg2['Close'] < leg1['Close']):
                     valid_zones.append({
                         'type': 'Supply', 'proximal': base_low, 'distal': base_high, 'index': leg2_idx
@@ -209,7 +223,6 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
 
     if not valid_zones: return None
     
-    # FILTER UNBROKEN ZONES
     active_zones = []
     for z in valid_zones:
         future_data = df.iloc[z['index']+1 : -1] 
@@ -220,29 +233,41 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
 
     if not active_zones: return None
     
-    # CHECK PROXIMITY
     atr_allowance = current_atr * atr_mult
     
     for z in reversed(active_zones):
+        ema_passed = True
+        ema_val = None
+        
+        if "44" in ltf_ema_choice:
+            ema_val = current['EMA_44']
+        elif "200" in ltf_ema_choice:
+            ema_val = current['EMA_200']
+            
+        if ema_val is not None:
+            if is_bullish:
+                if not (ema_val >= z['distal'] and ema_val <= (z['proximal'] + atr_allowance)):
+                    ema_passed = False
+            else:
+                if not (ema_val <= z['distal'] and ema_val >= (z['proximal'] - atr_allowance)):
+                    ema_passed = False
+                    
+        if not ema_passed: continue
+        
         is_tapped = False
         is_approaching = False
         
         if is_bullish:
-            # Tapped: Low breached proximal, hasn't broken distal SL
             if current['Low'] <= z['proximal'] and current['Close'] >= z['distal']:
                 is_tapped = True
-            # Approaching: Low is within ATR allowance, but hasn't touched proximal
             elif current['Low'] > z['proximal'] and current['Low'] <= (z['proximal'] + atr_allowance):
                 is_approaching = True
         else:
-            # Tapped: High breached proximal, hasn't broken distal SL
             if current['High'] >= z['proximal'] and current['Close'] <= z['distal']:
                 is_tapped = True
-            # Approaching: High is within ATR allowance, but hasn't touched proximal
             elif current['High'] < z['proximal'] and current['High'] >= (z['proximal'] - atr_allowance):
                 is_approaching = True
 
-        # Apply user proximity filter
         if "Tapped Only" in prox_filter and not is_tapped: continue
         if "Approaching Only" in prox_filter and not is_approaching: continue
         if not (is_tapped or is_approaching): continue 
@@ -250,68 +275,102 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
         risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
         status_msg = "🎯 Freshly Tapped" if is_tapped else "⏳ Approaching"
         
+        ema_str = "N/A"
+        if "44" in ltf_ema_choice: ema_str = f"44 EMA: {current['EMA_44']:.2f}"
+        if "200" in ltf_ema_choice: ema_str = f"200 EMA: {current['EMA_200']:.2f}"
+        
         return {
-            "Zone Type": f"{z['type']} (2-Leg Confirmed)",
+            "Zone Type": f"{z['type']} (2-Leg)",
             "Live Price": round(current['Close'], 2),
             "Entry (Proximal)": round(z['proximal'], 2),
             "SL (Distal)": round(z['distal'], 2),
             "Risk %": f"{risk_pct:.2f}%",
+            "LTF EMA": ema_str,
             "Status": status_msg
         }
             
     return None
 
 # ==========================================
-# 4. EXECUTION ENGINE
+# 4. HIGH-SPEED MULTITHREADED EXECUTION ENGINE
 # ==========================================
-if st.sidebar.button("Launch Strict Scanner", type="primary"):
+def scan_single_stock(ticker, is_bull_setup, htf, ltf, req_htf_ema, ltf_ema_choice, max_base, base_pct, legout_pct, atr_mult, prox_filter):
+    try:
+        htf_passed = True
+        
+        # Determine Fetch Periods dynamically
+        ltf_period = {"1mo": "15y", "1wk": "10y", "1d": "5y", "75m": "60d"}.get(ltf, "5y")
+        ltf_interval = "15m" if ltf == "75m" else ltf
+
+        # STEP 1: Fetch HTF & Check Trend if requested
+        if req_htf_ema:
+            htf_passed = False
+            if htf in ['3mo', '6mo']:
+                df_htf = yf.Ticker(ticker).history(period="max", interval="1mo")
+                if not df_htf.empty:
+                    if htf == '3mo': df_htf = resample_macro(df_htf, '3ME')
+                    if htf == '6mo': df_htf = resample_macro(df_htf, '6ME')
+            else:
+                df_htf = yf.Ticker(ticker).history(period="max", interval=htf)
+                
+            if not df_htf.empty and len(df_htf) > 200:
+                htf_passed = check_htf_trend(df_htf, is_bull_setup)
+        
+        # STEP 2: Fetch LTF & Validate Setup 
+        if htf_passed:
+            df_ltf = yf.Ticker(ticker).history(period=ltf_period, interval=ltf_interval)
+            if not df_ltf.empty:
+                if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
+                
+                setup = check_ltf_setup(df_ltf, is_bull_setup, max_base, base_pct, legout_pct, atr_mult, prox_filter, ltf_ema_choice)
+                if setup:
+                    setup['Ticker'] = ticker.replace(".NS", "")
+                    return setup
+    except Exception:
+        pass
+    return None
+
+if st.sidebar.button("⚡ Launch High-Speed Scanner", type="primary"):
     is_bull_setup = "Bullish" in direction
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Running MTF Pipeline: HTF ({htf_label}) ➔ LTF ({ltf_label})")
-        
-        # Max period requested to ensure 200 EMA calculation works on HTF
-        htf_period = "max" 
-        htf_interval = htf
-        
-        ltf_period = {"1d": "5y", "1wk": "10y", "75m": "60d"}.get(ltf, "5y")
-        ltf_interval = "15m" if ltf == "75m" else ltf
+        htf_ema_status = "ON" if require_htf_ema else "OFF"
+        ltf_ema_status = ltf_ema_filter.split(' ')[0]
+        st.info(f"Loaded {len(ticker_list)} stocks. Running Multithreaded Scan. HTF: {htf_ema_status} ➔ LTF EMA: {ltf_ema_status}")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         results = []
         
-        for i, ticker in enumerate(ticker_list):
-            status_text.text(f"Scanning {ticker}... ({i+1}/{len(ticker_list)})")
-            try:
-                # STEP 1: Fetch HTF & Filter (Requires 200 periods of data minimum)
-                df_htf = yf.Ticker(ticker).history(period=htf_period, interval=htf_interval)
-                if not df_htf.empty and len(df_htf) > 200:
-                    if check_htf_trend(df_htf, is_bull_setup):
-                        
-                        # STEP 2: Fetch LTF & Validate Setup
-                        df_ltf = yf.Ticker(ticker).history(period=ltf_period, interval=ltf_interval)
-                        if not df_ltf.empty:
-                            if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
-                            
-                            setup = check_ltf_setup(df_ltf, is_bull_setup, max_base_candles, base_body_pct, legout_body_pct, atr_multiplier, proximity_filter)
-                            if setup:
-                                setup['Ticker'] = ticker.replace(".NS", "")
-                                results.append(setup)
-            except: pass
+        # Set max_workers to 15 for optimal speed without triggering Yahoo Finance anti-bot bans
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+            future_to_ticker = {
+                executor.submit(scan_single_stock, ticker, is_bull_setup, htf, ltf, require_htf_ema, 
+                                ltf_ema_filter, max_base_candles, base_body_pct, legout_body_pct, 
+                                atr_multiplier, proximity_filter): ticker 
+                for ticker in ticker_list
+            }
             
-            progress_bar.progress((i + 1) / len(ticker_list))
-            
+            completed_count = 0
+            for future in concurrent.futures.as_completed(future_to_ticker):
+                completed_count += 1
+                progress_bar.progress(completed_count / len(ticker_list))
+                status_text.text(f"Processed {completed_count}/{len(ticker_list)} stocks...")
+                
+                res = future.result()
+                if res:
+                    results.append(res)
+                    
         status_text.empty()
         progress_bar.empty()
         
         st.subheader(f"📊 {direction[:2]} Strict 2-Leg Results")
         if results:
-            final_df = pd.DataFrame(results)[['Ticker', 'Zone Type', 'Live Price', 'Status', 'Entry (Proximal)', 'SL (Distal)', 'Risk %']]
+            final_df = pd.DataFrame(results)[['Ticker', 'Zone Type', 'Live Price', 'Status', 'Entry (Proximal)', 'SL (Distal)', 'Risk %', 'LTF EMA']]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Target acquired. Stocks strictly match 44>200 EMA on HTF and 2-Leg Marubozu breaks on LTF.")
+            st.success("Lightning scan complete. Target acquired.")
         else:
-            st.warning("0 matches. The 200 EMA HTF filter combined with the strict 2-Leg 80% Marubozu breakout requirement eliminated all weak charts.")
+            st.warning("0 matches found based on the current strict conditions.")
