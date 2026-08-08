@@ -311,10 +311,12 @@ if st.button("🚀 INITIATE APEX SCAN", type="primary"):
         
         macro_data = None
         if require_macro_ema:
-            macro_data = yf.download(tickers_str, period=macro_period_val, interval=macro_interval_val, group_by='ticker', threads=True, show_errors=False)
+            # Removed show_errors=False to fix the yfinance version compatibility issue
+            macro_data = yf.download(tickers_str, period=macro_period_val, interval=macro_interval_val, group_by='ticker', threads=True)
             
         progress_bar.progress(50)
-        exec_data = yf.download(tickers_str, period=exec_period_val, interval=exec_interval_val, group_by='ticker', threads=True, show_errors=False)
+        # Removed show_errors=False to fix the yfinance version compatibility issue
+        exec_data = yf.download(tickers_str, period=exec_period_val, interval=exec_interval_val, group_by='ticker', threads=True)
         
         progress_bar.progress(85)
         
