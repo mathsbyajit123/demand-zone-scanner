@@ -5,16 +5,15 @@ import numpy as np
 import requests
 import io
 import warnings
-import concurrent.futures
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="High-Speed MTF S&D Scanner", layout="wide")
-st.title("⚡ High-Speed MTF S&D Scanner")
-st.markdown("Features 3M/6M Macro tracking, HTF trend filtering, strict LTF Marubozu breakouts, and multithreaded execution for rapid scanning.")
+st.set_page_config(page_title="High-Speed Role Reversal Scanner", layout="wide")
+st.title("⚡ Ultra-Speed Role Reversal (BOS Retest) Scanner")
+st.markdown("Scans strictly for old S&R zones that were broken with massive momentum and are now being retested from the other side.")
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
@@ -41,21 +40,20 @@ st.sidebar.header("📈 EMA Settings")
 require_htf_ema = st.sidebar.checkbox(
     "✅ Require HTF Trend (44 > 200 EMA)", 
     value=False, 
-    help="Uncheck if using 3M or 6M HTF, as 200 EMAs require 50-100 years of data."
+    help="Uncheck if using 3M/6M HTF to bypass the 200 EMA data limit."
 )
 
 ltf_ema_filter = st.sidebar.radio(
     "Require LTF EMA Confluence at Zone?",
-    ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA"),
-    help="Forces the selected EMA to physically pass through or sit right next to the LTF Demand/Supply zone."
+    ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA")
 )
 
 st.sidebar.header("🎯 Setup Direction")
-direction = st.sidebar.radio("Direction", ("🟢 Bullish (Long)", "🔴 Bearish (Short)"))
+direction = st.sidebar.radio("Trade Direction", ("🟢 Bullish (Buy at Flipped Resistance)", "🔴 Bearish (Sell at Flipped Support)"))
 
-st.sidebar.header("📍 Current Zone Status")
+st.sidebar.header("📍 Proximity Filter")
 proximity_filter = st.sidebar.radio(
-    "Where is the LTF Live Price?",
+    "Live Price Status",
     (
         "Show Both (Tapped & Approaching)",
         "🎯 Freshly Tapped Only",
@@ -63,13 +61,11 @@ proximity_filter = st.sidebar.radio(
     )
 )
 
-st.sidebar.header("📐 Base & Breakout Strictness")
-max_base_candles = st.sidebar.slider("Max Base Candles (Squeeze)", min_value=1, max_value=3, value=3)
-base_body_pct = st.sidebar.slider("Max Base Body % (Shrink Type)", min_value=10, max_value=50, value=45)
-legout_body_pct = st.sidebar.slider("Min Leg-Out Body % (Marubozu)", min_value=60, max_value=95, value=80)
-
-st.sidebar.header("🧲 Execution Hit-Box")
-atr_multiplier = st.sidebar.slider("ATR Pullback Allowance", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
+st.sidebar.header("📐 Strictness Settings")
+max_base_candles = st.sidebar.slider("Max Old Base Candles", min_value=1, max_value=4, value=3)
+base_body_pct = st.sidebar.slider("Max Old Base Body %", min_value=10, max_value=60, value=50)
+breakout_body_pct = st.sidebar.slider("Min BOS Breakout Body %", min_value=60, max_value=95, value=75, help="Forces the breakout to be a true Marubozu/Institutional candle.")
+atr_multiplier = st.sidebar.slider("ATR Pullback Hit-Box", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
 
 # ==========================================
 # 2. DATA FETCHER 
@@ -134,7 +130,7 @@ def get_index_tickers(sector_name):
     return [f"{ticker}.NS" for ticker in fetched_list]
 
 # ==========================================
-# 3. CORE LOGIC ENGINE & MACRO RESAMPLERS
+# 3. CORE LOGIC ENGINE & RESAMPLERS
 # ==========================================
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({
@@ -155,18 +151,14 @@ def calculate_atr(df, period=14):
 
 def check_htf_trend(df, is_bullish):
     if len(df) < 200: return False
-    
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     curr = df.iloc[-1]
-    
-    if is_bullish:
-        return (curr['Close'] > curr['EMA_44']) and (curr['EMA_44'] > curr['EMA_200'])
-    else:
-        return (curr['Close'] < curr['EMA_44']) and (curr['EMA_44'] < curr['EMA_200'])
+    if is_bullish: return (curr['Close'] > curr['EMA_44']) and (curr['EMA_44'] > curr['EMA_200'])
+    else: return (curr['Close'] < curr['EMA_44']) and (curr['EMA_44'] < curr['EMA_200'])
 
-def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, prox_filter, ltf_ema_choice):
-    if len(df) < 200: return None
+def check_role_reversal(df, is_bullish, max_bases, base_pct, breakout_pct, atr_mult, prox_filter, ltf_ema_choice):
+    if len(df) < 100: return None
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
     df['ATR'] = calculate_atr(df)
@@ -177,16 +169,14 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
     current = df.iloc[-1]
     current_atr = current['ATR'] if not pd.isna(current['ATR']) else current['Range']
     
-    valid_zones = []
+    flipped_zones = []
     
-    for i in range(10, len(df) - 3):
+    # SCAN FOR OLD ZONES THAT GOT SHATTERED
+    for i in range(10, len(df) - 10):
         for bases in range(1, max_bases + 1):
             base_slice = df.iloc[i : i + bases]
-            leg1_idx = i + bases
-            leg2_idx = i + bases + 1
             
-            if leg2_idx >= len(df) - 1: break
-                
+            # Verify it was a tight, valid base
             base_valid = True
             for _, candle in base_slice.iterrows():
                 if candle['Range'] == 0 or ((candle['Body'] / candle['Range']) * 100 > base_pct):
@@ -197,60 +187,60 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
             base_high = base_slice['High'].max()
             base_low = base_slice['Low'].min()
             
-            leg1 = df.iloc[leg1_idx]
-            leg2 = df.iloc[leg2_idx]
-            
-            if leg1['Range'] == 0 or leg2['Range'] == 0: continue
+            # Find the breakout event (BOS) in the future data
+            future_data = df.iloc[i + bases : -1]
+            if future_data.empty: continue
                 
-            leg1_body_pct = (leg1['Body'] / leg1['Range']) * 100
-            leg2_body_pct = (leg2['Body'] / leg2['Range']) * 100
-            
-            if leg1_body_pct < legout_pct or leg2_body_pct < legout_pct: continue
-                
-            leg1_green = leg1['Close'] > leg1['Open']
-            leg2_green = leg2['Close'] > leg2['Open']
-            
             if is_bullish:
-                if leg1_green and leg2_green and (leg1['Close'] > base_high) and (leg2['Close'] > leg1['Close']):
-                    valid_zones.append({
-                        'type': 'Demand', 'proximal': base_high, 'distal': base_low, 'index': leg2_idx
-                    })
+                # Looking for old SUPPLY that was broken UPWARDS
+                breakouts = future_data[future_data['Close'] > base_high]
+                if not breakouts.empty:
+                    bos_idx = breakouts.index[0]
+                    bos_candle = breakouts.loc[bos_idx]
+                    
+                    # Verify breakout was massive (Marubozu style)
+                    if bos_candle['Range'] > 0 and ((bos_candle['Body'] / bos_candle['Range']) * 100 >= breakout_pct):
+                        
+                        # Verify the zone hasn't been completely destroyed on the downside since the breakout
+                        post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+                        if post_bos.empty or not (post_bos['Close'] < base_low).any():
+                            # The old Supply High becomes new Demand Entry (Proximal)
+                            # The old Supply Low becomes new Demand SL (Distal)
+                            flipped_zones.append({
+                                'type': 'Flipped to Demand', 'proximal': base_high, 'distal': base_low
+                            })
             else:
-                if not leg1_green and not leg2_green and (leg1['Close'] < base_low) and (leg2['Close'] < leg1['Close']):
-                    valid_zones.append({
-                        'type': 'Supply', 'proximal': base_low, 'distal': base_high, 'index': leg2_idx
-                    })
+                # Looking for old DEMAND that was broken DOWNWARDS
+                breakdowns = future_data[future_data['Close'] < base_low]
+                if not breakdowns.empty:
+                    bos_idx = breakdowns.index[0]
+                    bos_candle = breakdowns.loc[bos_idx]
+                    
+                    if bos_candle['Range'] > 0 and ((bos_candle['Body'] / bos_candle['Range']) * 100 >= breakout_pct):
+                        
+                        post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+                        if post_bos.empty or not (post_bos['Close'] > base_high).any():
+                            flipped_zones.append({
+                                'type': 'Flipped to Supply', 'proximal': base_low, 'distal': base_high
+                            })
 
-    if not valid_zones: return None
-    
-    active_zones = []
-    for z in valid_zones:
-        future_data = df.iloc[z['index']+1 : -1] 
-        if is_bullish:
-            if not (future_data['Close'] < z['distal']).any(): active_zones.append(z)
-        else:
-            if not (future_data['Close'] > z['distal']).any(): active_zones.append(z)
-
-    if not active_zones: return None
+    if not flipped_zones: return None
     
     atr_allowance = current_atr * atr_mult
     
-    for z in reversed(active_zones):
+    # REVERSE TO CHECK THE MOST RECENT ZONES FIRST
+    for z in reversed(flipped_zones):
         ema_passed = True
         ema_val = None
         
-        if "44" in ltf_ema_choice:
-            ema_val = current['EMA_44']
-        elif "200" in ltf_ema_choice:
-            ema_val = current['EMA_200']
+        if "44" in ltf_ema_choice: ema_val = current['EMA_44']
+        elif "200" in ltf_ema_choice: ema_val = current['EMA_200']
             
         if ema_val is not None:
             if is_bullish:
-                if not (ema_val >= z['distal'] and ema_val <= (z['proximal'] + atr_allowance)):
-                    ema_passed = False
+                if not (ema_val >= z['distal'] and ema_val <= (z['proximal'] + atr_allowance)): ema_passed = False
             else:
-                if not (ema_val <= z['distal'] and ema_val >= (z['proximal'] - atr_allowance)):
-                    ema_passed = False
+                if not (ema_val <= z['distal'] and ema_val >= (z['proximal'] - atr_allowance)): ema_passed = False
                     
         if not ema_passed: continue
         
@@ -258,15 +248,11 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
         is_approaching = False
         
         if is_bullish:
-            if current['Low'] <= z['proximal'] and current['Close'] >= z['distal']:
-                is_tapped = True
-            elif current['Low'] > z['proximal'] and current['Low'] <= (z['proximal'] + atr_allowance):
-                is_approaching = True
+            if current['Low'] <= z['proximal'] and current['Close'] >= z['distal']: is_tapped = True
+            elif current['Low'] > z['proximal'] and current['Low'] <= (z['proximal'] + atr_allowance): is_approaching = True
         else:
-            if current['High'] >= z['proximal'] and current['Close'] <= z['distal']:
-                is_tapped = True
-            elif current['High'] < z['proximal'] and current['High'] >= (z['proximal'] - atr_allowance):
-                is_approaching = True
+            if current['High'] >= z['proximal'] and current['Close'] <= z['distal']: is_tapped = True
+            elif current['High'] < z['proximal'] and current['High'] >= (z['proximal'] - atr_allowance): is_approaching = True
 
         if "Tapped Only" in prox_filter and not is_tapped: continue
         if "Approaching Only" in prox_filter and not is_approaching: continue
@@ -280,8 +266,9 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
         if "200" in ltf_ema_choice: ema_str = f"200 EMA: {current['EMA_200']:.2f}"
         
         return {
-            "Zone Type": f"{z['type']} (2-Leg)",
+            "Zone Type": f"{z['type']} (BOS Retest)",
             "Live Price": round(current['Close'], 2),
+            "Zone Range": f"₹{round(z['proximal'], 2)} - ₹{round(z['distal'], 2)}",
             "Entry (Proximal)": round(z['proximal'], 2),
             "SL (Distal)": round(z['distal'], 2),
             "Risk %": f"{risk_pct:.2f}%",
@@ -292,85 +279,80 @@ def check_ltf_setup(df, is_bullish, max_bases, base_pct, legout_pct, atr_mult, p
     return None
 
 # ==========================================
-# 4. HIGH-SPEED MULTITHREADED EXECUTION ENGINE
+# 4. BATCH DOWNLOADING ENGINE (THE SPEED FIX)
 # ==========================================
-def scan_single_stock(ticker, is_bull_setup, htf, ltf, req_htf_ema, ltf_ema_choice, max_base, base_pct, legout_pct, atr_mult, prox_filter):
-    try:
-        htf_passed = True
-        
-        # Determine Fetch Periods dynamically
-        ltf_period = {"1mo": "15y", "1wk": "10y", "1d": "5y", "75m": "60d"}.get(ltf, "5y")
-        ltf_interval = "15m" if ltf == "75m" else ltf
-
-        # STEP 1: Fetch HTF & Check Trend if requested
-        if req_htf_ema:
-            htf_passed = False
-            if htf in ['3mo', '6mo']:
-                df_htf = yf.Ticker(ticker).history(period="max", interval="1mo")
-                if not df_htf.empty:
-                    if htf == '3mo': df_htf = resample_macro(df_htf, '3ME')
-                    if htf == '6mo': df_htf = resample_macro(df_htf, '6ME')
-            else:
-                df_htf = yf.Ticker(ticker).history(period="max", interval=htf)
-                
-            if not df_htf.empty and len(df_htf) > 200:
-                htf_passed = check_htf_trend(df_htf, is_bull_setup)
-        
-        # STEP 2: Fetch LTF & Validate Setup 
-        if htf_passed:
-            df_ltf = yf.Ticker(ticker).history(period=ltf_period, interval=ltf_interval)
-            if not df_ltf.empty:
-                if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
-                
-                setup = check_ltf_setup(df_ltf, is_bull_setup, max_base, base_pct, legout_pct, atr_mult, prox_filter, ltf_ema_choice)
-                if setup:
-                    setup['Ticker'] = ticker.replace(".NS", "")
-                    return setup
-    except Exception:
-        pass
-    return None
-
-if st.sidebar.button("⚡ Launch High-Speed Scanner", type="primary"):
+if st.sidebar.button("⚡ Launch Batch Scanner", type="primary"):
     is_bull_setup = "Bullish" in direction
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        htf_ema_status = "ON" if require_htf_ema else "OFF"
-        ltf_ema_status = ltf_ema_filter.split(' ')[0]
-        st.info(f"Loaded {len(ticker_list)} stocks. Running Multithreaded Scan. HTF: {htf_ema_status} ➔ LTF EMA: {ltf_ema_status}")
+        st.info(f"Loaded {len(ticker_list)} stocks. Phase 1: Initiating Mass Batch Download...")
         
-        progress_bar = st.progress(0)
+        htf_period_val = "max" if htf in ['3mo', '6mo'] else "10y"
+        htf_interval_val = "1mo" if htf in ['3mo', '6mo'] else htf
+        
+        ltf_period_val = {"1mo": "15y", "1wk": "10y", "1d": "5y", "75m": "60d"}.get(ltf, "5y")
+        ltf_interval_val = "15m" if ltf == "75m" else ltf
+        
+        tickers_str = " ".join(ticker_list)
+        
+        progress_bar = st.progress(10)
         status_text = st.empty()
+        
+        htf_data = None
+        if require_htf_ema:
+            status_text.text("📥 Payload 1/2: Downloading Higher Timeframe Market Data...")
+            htf_data = yf.download(tickers_str, period=htf_period_val, interval=htf_interval_val, group_by='ticker', threads=True, show_errors=False)
+            
+        progress_bar.progress(50)
+        status_text.text("📥 Payload 2/2: Downloading Lower Timeframe Market Data...")
+        ltf_data = yf.download(tickers_str, period=ltf_period_val, interval=ltf_interval_val, group_by='ticker', threads=True, show_errors=False)
+        
+        progress_bar.progress(85)
+        status_text.text("🧠 Phase 2: Processing S&R Flip Logic locally...")
+        
         results = []
         
-        # Set max_workers to 15 for optimal speed without triggering Yahoo Finance anti-bot bans
-        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-            future_to_ticker = {
-                executor.submit(scan_single_stock, ticker, is_bull_setup, htf, ltf, require_htf_ema, 
-                                ltf_ema_filter, max_base_candles, base_body_pct, legout_body_pct, 
-                                atr_multiplier, proximity_filter): ticker 
-                for ticker in ticker_list
-            }
-            
-            completed_count = 0
-            for future in concurrent.futures.as_completed(future_to_ticker):
-                completed_count += 1
-                progress_bar.progress(completed_count / len(ticker_list))
-                status_text.text(f"Processed {completed_count}/{len(ticker_list)} stocks...")
+        for ticker in ticker_list:
+            try:
+                htf_passed = True
                 
-                res = future.result()
-                if res:
-                    results.append(res)
+                if require_htf_ema and htf_data is not None:
+                    htf_passed = False
+                    df_htf = htf_data if len(ticker_list) == 1 else htf_data[ticker]
+                    df_htf = df_htf.dropna()
                     
+                    if not df_htf.empty:
+                        if htf == '3mo': df_htf = resample_macro(df_htf, '3ME')
+                        if htf == '6mo': df_htf = resample_macro(df_htf, '6ME')
+                        if len(df_htf) > 200:
+                            htf_passed = check_htf_trend(df_htf, is_bull_setup)
+                
+                if htf_passed:
+                    df_ltf = ltf_data if len(ticker_list) == 1 else ltf_data[ticker]
+                    df_ltf = df_ltf.dropna()
+                    
+                    if not df_ltf.empty:
+                        if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
+                        
+                        setup = check_role_reversal(df_ltf, is_bull_setup, max_base_candles, base_body_pct, breakout_body_pct, atr_multiplier, proximity_filter, ltf_ema_filter)
+                        if setup:
+                            setup['Ticker'] = ticker.replace(".NS", "")
+                            results.append(setup)
+                            
+            except Exception:
+                pass
+                
+        progress_bar.progress(100)
         status_text.empty()
         progress_bar.empty()
         
-        st.subheader(f"📊 {direction[:2]} Strict 2-Leg Results")
+        st.subheader(f"📊 {direction[:2]} Strict Role Reversal Results")
         if results:
-            final_df = pd.DataFrame(results)[['Ticker', 'Zone Type', 'Live Price', 'Status', 'Entry (Proximal)', 'SL (Distal)', 'Risk %', 'LTF EMA']]
+            final_df = pd.DataFrame(results)[['Ticker', 'Zone Type', 'Live Price', 'Zone Range', 'Entry (Proximal)', 'SL (Distal)', 'Risk %', 'LTF EMA', 'Status']]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Lightning scan complete. Target acquired.")
+            st.success("Lightning Batch Scan Complete. Support/Resistance Flips isolated.")
         else:
-            st.warning("0 matches found based on the current strict conditions.")
+            st.warning("0 matches. The stringent Break of Structure (BOS) rule and proximity limits successfully filtered out the noise.")
