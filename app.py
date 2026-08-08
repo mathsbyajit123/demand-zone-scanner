@@ -2,8 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-import io
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -11,9 +9,9 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. STREAMLIT UI & SETTINGS
 # ==========================================
-st.set_page_config(page_title="High-Speed Role Reversal Scanner", layout="wide")
-st.title("⚡ Ultra-Speed Role Reversal (BOS Retest) Scanner")
-st.markdown("Scans strictly for old S&R zones that were broken with massive momentum and are now being retested from the other side.")
+st.set_page_config(page_title="Pure S&R Retest Scanner", layout="wide")
+st.title("⚡ Pure Support & Resistance (Break & Retest) Scanner")
+st.markdown("Scans strictly for major horizontal Swing Highs/Lows that were broken and are now being retested. Zero Supply/Demand mechanics.")
 
 st.sidebar.header("⚙️ Market Settings")
 sector_options = [
@@ -31,47 +29,39 @@ htf_options = {"6 Months": "6mo", "3 Months": "3mo", "1 Month": "1mo", "1 Week":
 ltf_options = {"1 Month": "1mo", "1 Week": "1wk", "1 Day": "1d", "75 Minutes (Intraday)": "75m"}
 
 htf_label = st.sidebar.selectbox("Higher Timeframe (HTF)", list(htf_options.keys()), index=2)
-ltf_label = st.sidebar.selectbox("Lower Timeframe (LTF)", list(ltf_options.keys()), index=2)
+ltf_label = st.sidebar.selectbox("Lower Timeframe (LTF) - Trading TF", list(ltf_options.keys()), index=2)
 
 htf = htf_options[htf_label]
 ltf = ltf_options[ltf_label]
 
-st.sidebar.header("📈 EMA Settings")
+st.sidebar.header("📈 Trend & EMA Settings")
 require_htf_ema = st.sidebar.checkbox(
     "✅ Require HTF Trend (44 > 200 EMA)", 
     value=False, 
     help="Uncheck if using 3M/6M HTF to bypass the 200 EMA data limit."
 )
-
 ltf_ema_filter = st.sidebar.radio(
-    "Require LTF EMA Confluence at Zone?",
+    "Require LTF EMA Support at S&R Line?",
     ("None (Pure Price Action)", "Near 44 EMA", "Near 200 EMA")
 )
 
 st.sidebar.header("🎯 Setup Direction")
-direction = st.sidebar.radio("Trade Direction", ("🟢 Bullish (Buy at Flipped Resistance)", "🔴 Bearish (Sell at Flipped Support)"))
+direction = st.sidebar.radio("Trade Setup", ("🟢 Bullish (Broken Resistance flipped to Support)", "🔴 Bearish (Broken Support flipped to Resistance)"))
 
-st.sidebar.header("📍 Proximity Filter")
-proximity_filter = st.sidebar.radio(
-    "Live Price Status",
-    (
-        "Show Both (Tapped & Approaching)",
-        "🎯 Freshly Tapped Only",
-        "⏳ Approaching Only"
-    )
+st.sidebar.header("📐 Swing Point Strictness")
+swing_length = st.sidebar.slider(
+    "Swing Point Strength (Candles)", 
+    min_value=3, max_value=15, value=5, 
+    help="How major the Support/Resistance level must be. '5' means the peak was higher than the 5 candles before and after it."
 )
-
-st.sidebar.header("📐 Strictness Settings")
-max_base_candles = st.sidebar.slider("Max Old Base Candles", min_value=1, max_value=4, value=3)
-base_body_pct = st.sidebar.slider("Max Old Base Body %", min_value=10, max_value=60, value=50)
-breakout_body_pct = st.sidebar.slider("Min BOS Breakout Body %", min_value=60, max_value=95, value=75, help="Forces the breakout to be a true Marubozu/Institutional candle.")
-atr_multiplier = st.sidebar.slider("ATR Pullback Hit-Box", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
+atr_multiplier = st.sidebar.slider("ATR Touch Hit-Box", min_value=0.1, max_value=2.0, value=0.5, step=0.1, help="How close the live price must get to the horizontal line to count as a retest.")
 
 # ==========================================
 # 2. DATA FETCHER 
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
+    import requests, io
     fo_stocks_list = [
         "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
         "ADANIPOWER", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", 
@@ -130,7 +120,7 @@ def get_index_tickers(sector_name):
     return [f"{ticker}.NS" for ticker in fetched_list]
 
 # ==========================================
-# 3. CORE LOGIC ENGINE & RESAMPLERS
+# 3. CORE LOGIC ENGINE (PURE S&R)
 # ==========================================
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({
@@ -157,138 +147,129 @@ def check_htf_trend(df, is_bullish):
     if is_bullish: return (curr['Close'] > curr['EMA_44']) and (curr['EMA_44'] > curr['EMA_200'])
     else: return (curr['Close'] < curr['EMA_44']) and (curr['EMA_44'] < curr['EMA_200'])
 
-def check_role_reversal(df, is_bullish, max_bases, base_pct, breakout_pct, atr_mult, prox_filter, ltf_ema_choice):
+def check_snr_retest(df, is_bullish, swing_len, atr_mult, ltf_ema_choice):
     if len(df) < 100: return None
-    df['Range'] = df['High'] - df['Low']
-    df['Body'] = abs(df['Close'] - df['Open'])
     df['ATR'] = calculate_atr(df)
-    
     df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
+    # Identify true Swing Highs and Swing Lows
+    window = swing_len * 2 + 1
+    df['Swing_High'] = df['High'][(df['High'] == df['High'].rolling(window, center=True).max())]
+    df['Swing_Low'] = df['Low'][(df['Low'] == df['Low'].rolling(window, center=True).min())]
+    
     current = df.iloc[-1]
-    current_atr = current['ATR'] if not pd.isna(current['ATR']) else current['Range']
+    current_atr = current['ATR'] if not pd.isna(current['ATR']) else (current['High'] - current['Low'])
     
-    flipped_zones = []
+    valid_setups = []
     
-    # SCAN FOR OLD ZONES THAT GOT SHATTERED
-    for i in range(10, len(df) - 10):
-        for bases in range(1, max_bases + 1):
-            base_slice = df.iloc[i : i + bases]
-            
-            # Verify it was a tight, valid base
-            base_valid = True
-            for _, candle in base_slice.iterrows():
-                if candle['Range'] == 0 or ((candle['Body'] / candle['Range']) * 100 > base_pct):
-                    base_valid = False
-                    break
-            if not base_valid: continue
+    if is_bullish:
+        # Look for old Resistance (Swing Highs) that were broken and are now Support
+        swing_highs = df['Swing_High'].dropna()
+        
+        for idx, resistance_price in swing_highs.items():
+            # Only look at swing highs that are not the absolute most recent candles
+            if df.index.get_loc(idx) > len(df) - (swing_len + 3): continue
                 
-            base_high = base_slice['High'].max()
-            base_low = base_slice['Low'].min()
+            future_data = df.loc[idx:]
             
-            # Find the breakout event (BOS) in the future data
-            future_data = df.iloc[i + bases : -1]
-            if future_data.empty: continue
+            # 1. Was the Resistance broken? (Did price close above it?)
+            breakouts = future_data[future_data['Close'] > resistance_price]
+            if breakouts.empty: continue
+            
+            bos_idx = breakouts.index[0]
+            
+            # 2. Has the new Support been completely broken back down since the breakout?
+            post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+            if not post_bos.empty and (post_bos['Close'] < resistance_price).any():
+                continue # Failed support, skip it
                 
-            if is_bullish:
-                # Looking for old SUPPLY that was broken UPWARDS
-                breakouts = future_data[future_data['Close'] > base_high]
-                if not breakouts.empty:
-                    bos_idx = breakouts.index[0]
-                    bos_candle = breakouts.loc[bos_idx]
-                    
-                    # Verify breakout was massive (Marubozu style)
-                    if bos_candle['Range'] > 0 and ((bos_candle['Body'] / bos_candle['Range']) * 100 >= breakout_pct):
-                        
-                        # Verify the zone hasn't been completely destroyed on the downside since the breakout
-                        post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-                        if post_bos.empty or not (post_bos['Close'] < base_low).any():
-                            # The old Supply High becomes new Demand Entry (Proximal)
-                            # The old Supply Low becomes new Demand SL (Distal)
-                            flipped_zones.append({
-                                'type': 'Flipped to Demand', 'proximal': base_high, 'distal': base_low
-                            })
-            else:
-                # Looking for old DEMAND that was broken DOWNWARDS
-                breakdowns = future_data[future_data['Close'] < base_low]
-                if not breakdowns.empty:
-                    bos_idx = breakdowns.index[0]
-                    bos_candle = breakdowns.loc[bos_idx]
-                    
-                    if bos_candle['Range'] > 0 and ((bos_candle['Body'] / bos_candle['Range']) * 100 >= breakout_pct):
-                        
-                        post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
-                        if post_bos.empty or not (post_bos['Close'] > base_high).any():
-                            flipped_zones.append({
-                                'type': 'Flipped to Supply', 'proximal': base_low, 'distal': base_high
-                            })
-
-    if not flipped_zones: return None
-    
-    atr_allowance = current_atr * atr_mult
-    
-    # REVERSE TO CHECK THE MOST RECENT ZONES FIRST
-    for z in reversed(flipped_zones):
-        ema_passed = True
-        ema_val = None
-        
-        if "44" in ltf_ema_choice: ema_val = current['EMA_44']
-        elif "200" in ltf_ema_choice: ema_val = current['EMA_200']
+            # 3. Is the live price currently retesting this horizontal line?
+            atr_allowance = current_atr * atr_mult
             
-        if ema_val is not None:
-            if is_bullish:
-                if not (ema_val >= z['distal'] and ema_val <= (z['proximal'] + atr_allowance)): ema_passed = False
-            else:
-                if not (ema_val <= z['distal'] and ema_val >= (z['proximal'] - atr_allowance)): ema_passed = False
+            is_testing = False
+            # Hit-box logic: Low touched the line, but close didn't break down
+            if current['Low'] <= (resistance_price + atr_allowance) and current['Close'] >= resistance_price:
+                is_testing = True
+                
+            if is_testing:
+                # 4. EMA Confluence Check
+                ema_passed = True
+                ema_str = "N/A"
+                if "44" in ltf_ema_choice:
+                    ema_passed = (current['EMA_44'] >= resistance_price) and (current['EMA_44'] <= resistance_price + (current_atr * 2))
+                    ema_str = f"44 EMA: {current['EMA_44']:.2f}"
+                elif "200" in ltf_ema_choice:
+                    ema_passed = (current['EMA_200'] >= resistance_price) and (current['EMA_200'] <= resistance_price + (current_atr * 2))
+                    ema_str = f"200 EMA: {current['EMA_200']:.2f}"
                     
-        if not ema_passed: continue
+                if ema_passed:
+                    valid_setups.append({
+                        "Setup": "Broken Resistance ➔ New Support",
+                        "Live Price": round(current['Close'], 2),
+                        "S&R Line": round(resistance_price, 2),
+                        "LTF EMA": ema_str,
+                        "Status": "🎯 Testing S&R Line"
+                    })
+    else:
+        # Look for old Support (Swing Lows) that were broken and are now Resistance
+        swing_lows = df['Swing_Low'].dropna()
         
-        is_tapped = False
-        is_approaching = False
-        
-        if is_bullish:
-            if current['Low'] <= z['proximal'] and current['Close'] >= z['distal']: is_tapped = True
-            elif current['Low'] > z['proximal'] and current['Low'] <= (z['proximal'] + atr_allowance): is_approaching = True
-        else:
-            if current['High'] >= z['proximal'] and current['Close'] <= z['distal']: is_tapped = True
-            elif current['High'] < z['proximal'] and current['High'] >= (z['proximal'] - atr_allowance): is_approaching = True
-
-        if "Tapped Only" in prox_filter and not is_tapped: continue
-        if "Approaching Only" in prox_filter and not is_approaching: continue
-        if not (is_tapped or is_approaching): continue 
-
-        risk_pct = (abs(z['proximal'] - z['distal']) / max(z['proximal'], 0.01)) * 100
-        status_msg = "🎯 Freshly Tapped" if is_tapped else "⏳ Approaching"
-        
-        ema_str = "N/A"
-        if "44" in ltf_ema_choice: ema_str = f"44 EMA: {current['EMA_44']:.2f}"
-        if "200" in ltf_ema_choice: ema_str = f"200 EMA: {current['EMA_200']:.2f}"
-        
-        return {
-            "Zone Type": f"{z['type']} (BOS Retest)",
-            "Live Price": round(current['Close'], 2),
-            "Zone Range": f"₹{round(z['proximal'], 2)} - ₹{round(z['distal'], 2)}",
-            "Entry (Proximal)": round(z['proximal'], 2),
-            "SL (Distal)": round(z['distal'], 2),
-            "Risk %": f"{risk_pct:.2f}%",
-            "LTF EMA": ema_str,
-            "Status": status_msg
-        }
+        for idx, support_price in swing_lows.items():
+            if df.index.get_loc(idx) > len(df) - (swing_len + 3): continue
+                
+            future_data = df.loc[idx:]
             
+            breakdowns = future_data[future_data['Close'] < support_price]
+            if breakdowns.empty: continue
+            
+            bos_idx = breakdowns.index[0]
+            
+            post_bos = df.loc[bos_idx+1 : current.name - pd.Timedelta(days=1)]
+            if not post_bos.empty and (post_bos['Close'] > support_price).any():
+                continue 
+                
+            atr_allowance = current_atr * atr_mult
+            
+            is_testing = False
+            if current['High'] >= (support_price - atr_allowance) and current['Close'] <= support_price:
+                is_testing = True
+                
+            if is_testing:
+                ema_passed = True
+                ema_str = "N/A"
+                if "44" in ltf_ema_choice:
+                    ema_passed = (current['EMA_44'] <= support_price) and (current['EMA_44'] >= support_price - (current_atr * 2))
+                    ema_str = f"44 EMA: {current['EMA_44']:.2f}"
+                elif "200" in ltf_ema_choice:
+                    ema_passed = (current['EMA_200'] <= support_price) and (current['EMA_200'] >= support_price - (current_atr * 2))
+                    ema_str = f"200 EMA: {current['EMA_200']:.2f}"
+                    
+                if ema_passed:
+                    valid_setups.append({
+                        "Setup": "Broken Support ➔ New Resistance",
+                        "Live Price": round(current['Close'], 2),
+                        "S&R Line": round(support_price, 2),
+                        "LTF EMA": ema_str,
+                        "Status": "🎯 Testing S&R Line"
+                    })
+
+    if valid_setups:
+        # Return the most recent valid setup
+        return valid_setups[-1]
     return None
 
 # ==========================================
-# 4. BATCH DOWNLOADING ENGINE (THE SPEED FIX)
+# 4. HIGH-SPEED BATCH ENGINE 
 # ==========================================
-if st.sidebar.button("⚡ Launch Batch Scanner", type="primary"):
+if st.sidebar.button("⚡ Launch S&R Scanner", type="primary"):
     is_bull_setup = "Bullish" in direction
     
     with st.spinner(f"Fetching {selected_sector} list..."):
         ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
-        st.info(f"Loaded {len(ticker_list)} stocks. Phase 1: Initiating Mass Batch Download...")
+        st.info(f"Loaded {len(ticker_list)} stocks. Executing High-Speed Pure S&R Scan...")
         
         htf_period_val = "max" if htf in ['3mo', '6mo'] else "10y"
         htf_interval_val = "1mo" if htf in ['3mo', '6mo'] else htf
@@ -311,7 +292,7 @@ if st.sidebar.button("⚡ Launch Batch Scanner", type="primary"):
         ltf_data = yf.download(tickers_str, period=ltf_period_val, interval=ltf_interval_val, group_by='ticker', threads=True, show_errors=False)
         
         progress_bar.progress(85)
-        status_text.text("🧠 Phase 2: Processing S&R Flip Logic locally...")
+        status_text.text("🧠 Processing Pure Horizontal Support & Resistance Logic...")
         
         results = []
         
@@ -337,7 +318,7 @@ if st.sidebar.button("⚡ Launch Batch Scanner", type="primary"):
                     if not df_ltf.empty:
                         if ltf == '75m': df_ltf = resample_to_75m(df_ltf)
                         
-                        setup = check_role_reversal(df_ltf, is_bull_setup, max_base_candles, base_body_pct, breakout_body_pct, atr_multiplier, proximity_filter, ltf_ema_filter)
+                        setup = check_snr_retest(df_ltf, is_bull_setup, swing_length, atr_multiplier, ltf_ema_filter)
                         if setup:
                             setup['Ticker'] = ticker.replace(".NS", "")
                             results.append(setup)
@@ -349,10 +330,10 @@ if st.sidebar.button("⚡ Launch Batch Scanner", type="primary"):
         status_text.empty()
         progress_bar.empty()
         
-        st.subheader(f"📊 {direction[:2]} Strict Role Reversal Results")
+        st.subheader(f"📊 Pure S&R Break & Retest Results")
         if results:
-            final_df = pd.DataFrame(results)[['Ticker', 'Zone Type', 'Live Price', 'Zone Range', 'Entry (Proximal)', 'SL (Distal)', 'Risk %', 'LTF EMA', 'Status']]
+            final_df = pd.DataFrame(results)[['Ticker', 'Setup', 'Live Price', 'S&R Line', 'LTF EMA', 'Status']]
             st.dataframe(final_df, use_container_width=True, hide_index=True)
-            st.success("Lightning Batch Scan Complete. Support/Resistance Flips isolated.")
+            st.success("Lightning Batch Scan Complete. Horizontal Pivot Support/Resistance isolates found.")
         else:
-            st.warning("0 matches. The stringent Break of Structure (BOS) rule and proximity limits successfully filtered out the noise.")
+            st.warning("0 matches. No stocks are currently retesting a major horizontal swing pivot under your parameters.")
