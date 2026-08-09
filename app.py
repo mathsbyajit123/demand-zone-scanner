@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
+import io, requests
 
 warnings.filterwarnings('ignore')
 
@@ -72,13 +73,19 @@ with st.sidebar:
     timeframe = tf_options[tf_label]
     
     direction = st.radio("Target Vector", ("🟢 Active Demand (Buy)", "🔴 Active Supply (Sell)"))
+    
+    st.divider()
+    st.markdown("### 📐 **GEOMETRY OVERRIDE**")
+    st.caption("Loosen these if valid setups are being missed.")
+    max_base_body = st.slider("Max Base Body %", 20, 80, 50)
+    min_leg_body = st.slider("Min Leg-Out Body %", 40, 100, 60)
+    leg_mult = st.slider("Leg Momentum Multiplier", 1.0, 3.0, 1.2, step=0.1)
 
 # ==========================================
 # 3. UNIVERSE ROUTING
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
-    import requests, io
     fo_stocks_list = [
         "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
         "ADANIPOWER", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", 
@@ -122,8 +129,8 @@ def get_index_tickers(sector_name):
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
-def get_active_zone(df, is_bullish, tf_label):
-    df = df.tail(60)
+def get_active_zone(df, is_bullish, tf_label, max_b_body, min_l_body, l_mult):
+    df = df.tail(100) # Give it 100 bars of history to ensure we don't cut off zones forming slightly earlier
     if len(df) < 5: return None
     
     current_price = df.iloc[-1]['Close']
@@ -131,17 +138,11 @@ def get_active_zone(df, is_bullish, tf_label):
     current_high = df.iloc[-1]['High']
     
     # Map timeframe to dynamic proximity threshold (%)
-    if "Month" in tf_label:
-        max_dist_pct = 3.0
-    elif "Week" in tf_label:
-        max_dist_pct = 1.0
-    else: # Daily or 75m
-        max_dist_pct = 1.5
+    if "Month" in tf_label: max_dist_pct = 3.0
+    elif "Week" in tf_label: max_dist_pct = 1.0
+    else: max_dist_pct = 1.5
 
     MAX_BASE_CANDLES = 2
-    MAX_BASE_BODY_PCT = 45.0  
-    MIN_LEG_BODY_PCT = 65.0   
-    LEG_MOMENTUM_MULTIPLIER = 1.5 
     
     for i in range(len(df) - 3, 0, -1):
         for b_len in range(1, MAX_BASE_CANDLES + 1):
@@ -152,7 +153,7 @@ def get_active_zone(df, is_bullish, tf_label):
             leg_idx = i + b_len
             leg_candle = df.iloc[leg_idx]
             
-            # --- 1. VERIFY TIGHT BASE ---
+            # --- 1. VERIFY BASE STRICTNESS ---
             valid_base = True
             total_base_rng = 0.0
             
@@ -160,13 +161,12 @@ def get_active_zone(df, is_bullish, tf_label):
                 rng = candle['High'] - candle['Low']
                 body = abs(candle['Close'] - candle['Open'])
                 body_pct = (body / rng * 100) if rng > 0 else 0
-                if body_pct > MAX_BASE_BODY_PCT:
+                if body_pct > max_b_body:
                     valid_base = False
                     break
                 total_base_rng += rng
                 
             if not valid_base: continue
-            
             avg_base_rng = total_base_rng / b_len
             if avg_base_rng == 0: continue
             
@@ -175,43 +175,52 @@ def get_active_zone(df, is_bullish, tf_label):
             leg_body = abs(leg_candle['Close'] - leg_candle['Open'])
             leg_body_pct = (leg_body / leg_rng * 100) if leg_rng > 0 else 0
             
-            if leg_body_pct < MIN_LEG_BODY_PCT or leg_rng < (avg_base_rng * LEG_MOMENTUM_MULTIPLIER):
+            if leg_body_pct < min_l_body or leg_rng < (avg_base_rng * l_mult):
                 continue
                 
             if is_bullish and leg_candle['Close'] <= leg_candle['Open']: continue
             if not is_bullish and leg_candle['Close'] >= leg_candle['Open']: continue
                 
-            # --- 3. ZONE BOUNDARIES ---
+            # --- 3. ZONE BOUNDARIES (FIXED OVERLAP BUG) ---
             if is_bullish:
                 proximal = max(base_slice['Open'].max(), base_slice['Close'].max())
                 distal = base_slice['Low'].min()
-                if leg_candle['Close'] <= base_slice['High'].max(): continue
+                # FIX: Leg-out only needs to clear the bodies (proximal line), not the extreme wick
+                if leg_candle['Close'] <= proximal: continue 
             else:
                 proximal = min(base_slice['Open'].min(), base_slice['Close'].min())
                 distal = base_slice['High'].max()
-                if leg_candle['Close'] >= base_slice['Low'].min(): continue
+                # FIX: Leg-out only needs to clear the bodies
+                if leg_candle['Close'] >= proximal: continue
                 
-            # --- 4. ENSURE IT WAS NEVER MITIGATED ---
+            # --- 4. VERIFY IT IS NOT A BROKEN ZONE ---
             future_data = df.iloc[leg_idx + 1 : -1]
-            is_mitigated = False
+            is_broken = False
+            touch_count = 0
             
             if not future_data.empty:
                 for _, past_candle in future_data.iterrows():
-                    if is_bullish and past_candle['Low'] <= proximal: is_mitigated = True
-                    if not is_bullish and past_candle['High'] >= proximal: is_mitigated = True
+                    if is_bullish:
+                        # FIX: It only dies if a candle closed below the distal line
+                        if past_candle['Close'] < distal: is_broken = True
+                        elif past_candle['Low'] <= proximal: touch_count += 1
+                    else:
+                        # FIX: It only dies if a candle closed above the distal line
+                        if past_candle['Close'] > distal: is_broken = True
+                        elif past_candle['High'] >= proximal: touch_count += 1
             
-            if is_mitigated: continue
+            if is_broken: continue
             
             # --- 5. EXECUTION & PROXIMITY TRIGGER ---
             in_zone = False
             approaching = False
             
-            if is_bullish: # Demand
+            if is_bullish:
                 if current_low <= proximal and current_price >= distal:
                     in_zone = True
                 elif proximal < current_price <= proximal * (1 + (max_dist_pct / 100)):
                     approaching = True
-            else: # Supply
+            else:
                 if current_high >= proximal and current_price <= distal:
                     in_zone = True
                 elif proximal * (1 - (max_dist_pct / 100)) <= current_price < proximal:
@@ -219,8 +228,10 @@ def get_active_zone(df, is_bullish, tf_label):
             
             if in_zone or approaching:
                 status_msg = "🎯 IN ZONE" if in_zone else f"⚠️ APPROACHING (<{max_dist_pct}%)"
+                zone_type = f"🟢 Demand (Tested {touch_count}x)" if is_bullish else f"🔴 Supply (Tested {touch_count}x)"
+                
                 return {
-                    "Zone Type": "🟢 Active Demand" if is_bullish else "🔴 Active Supply",
+                    "Zone Type": zone_type,
                     "Live Price": round(current_price, 2),
                     "Entry": round(proximal, 2),
                     "SL": round(distal, 2),
@@ -267,7 +278,8 @@ if st.button("⚡ SCAN FOR LIVE EXECUTIONS", type="primary"):
                 
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = get_active_zone(df, is_bull, tf_label)
+                    
+                    setup = get_active_zone(df, is_bull, tf_label, max_base_body, min_leg_body, leg_mult)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -292,4 +304,4 @@ if st.button("⚡ SCAN FOR LIVE EXECUTIONS", type="primary"):
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. No assets are approaching or trading inside a valid, pristine zone right now. Wait for the market to come to your levels.")
+            st.error("0 MATCHES. You may need to loosen the Geometry Override sliders in the sidebar to catch setups with wider bases or weaker breakouts.")
