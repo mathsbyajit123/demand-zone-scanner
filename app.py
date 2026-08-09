@@ -3,41 +3,31 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
+import datetime
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# 1. APEX TERMINAL UI & CUSTOM CSS
+# 1. APEX TERMINAL UI
 # ==========================================
-st.set_page_config(page_title="Apex Live Retest Terminal", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Apex Rapid S&D Scanner", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
-    /* Dark Matter Background */
     .stApp { background-color: #090B10; color: #E2E8F0; }
-    
-    /* Cyber-Gold & Cyan Typography */
     .gradient-text {
-        font-weight: 900; font-size: 46px; letter-spacing: -1px;
+        font-weight: 900; font-size: 42px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
     }
-    .sub-text { font-size: 15px; color: #64748B; margin-top: -5px; margin-bottom: 35px; letter-spacing: 1px; text-transform: uppercase; font-weight: 600;}
-
-    /* Execution Button */
+    .sub-text { font-size: 14px; color: #64748B; margin-top: -5px; margin-bottom: 30px; letter-spacing: 1px; font-weight: 600;}
     div.stButton > button:first-child {
         background: linear-gradient(90deg, #00C6FF 0%, #0072FF 100%);
         color: white; border: none; border-radius: 6px;
         padding: 14px 24px; font-size: 16px; font-weight: 700; letter-spacing: 2px;
-        box-shadow: 0 4px 20px rgba(0, 198, 255, 0.4);
-        transition: all 0.3s ease; width: 100%; text-transform: uppercase;
+        box-shadow: 0 4px 20px rgba(0, 198, 255, 0.4); width: 100%; text-transform: uppercase;
     }
-    div.stButton > button:first-child:hover {
-        transform: translateY(-2px); box-shadow: 0 6px 25px rgba(0, 198, 255, 0.6);
-    }
-    
-    /* Sidebar & Metrics */
     .css-1d391kg { background-color: #11151C; border-right: 1px solid #1E293B; }
     div[data-testid="metric-container"] {
         background-color: #11151C; border-radius: 8px; padding: 20px;
@@ -48,59 +38,35 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Circular UI Injector
-def render_hud_progress(progress, status_text):
-    html = f"""
-    <div style="display: flex; flex-direction: column; align-items: center; margin: 50px 0px;">
-        <div style="
-            width: 180px; height: 180px; border-radius: 50%;
-            background: conic-gradient(#00C6FF {progress}%, #1E293B 0);
-            display: flex; justify-content: center; align-items: center;
-            box-shadow: 0 0 30px rgba(0, 198, 255, 0.2);
-        ">
-            <div style="
-                width: 165px; height: 165px; border-radius: 50%;
-                background-color: #090B10; display: flex; flex-direction: column;
-                justify-content: center; align-items: center;
-                font-size: 38px; font-weight: 900; color: #F8FAFC;
-            ">
-                {int(progress)}<span style="font-size: 16px; color: #64748B;">%</span>
+def render_hud(progress, status):
+    return f"""
+    <div style="display: flex; flex-direction: column; align-items: center; margin: 30px 0px;">
+        <div style="width: 120px; height: 120px; border-radius: 50%; background: conic-gradient(#00C6FF {progress}%, #1E293B 0); display: flex; justify-content: center; align-items: center; box-shadow: 0 0 20px rgba(0, 198, 255, 0.2);">
+            <div style="width: 105px; height: 105px; border-radius: 50%; background-color: #090B10; display: flex; justify-content: center; align-items: center; font-size: 24px; font-weight: 900; color: #F8FAFC;">
+                {int(progress)}<span style="font-size: 12px; color: #64748B;">%</span>
             </div>
         </div>
-        <p style="color: #4FACFE; font-size: 16px; margin-top: 25px; font-weight: 600; letter-spacing: 1.5px; text-transform: uppercase;">{status_text}</p>
+        <p style="color: #4FACFE; font-size: 14px; margin-top: 15px; font-weight: 600; letter-spacing: 1px;">{status}</p>
     </div>
     """
-    return html
 
-st.markdown('<p class="gradient-text">APEX RETEST TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Active Zone Penetration & Execution Engine</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">APEX RAPID SCANNER</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">High-Speed Unmitigated Zone Detector</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. COMMAND CENTER (SIDEBAR)
+# 2. COMMAND CENTER
 # ==========================================
 with st.sidebar:
     st.markdown("### **COMMAND CENTER**")
     st.divider()
-
-    st.markdown("#### 🌍 DATA FEED")
-    sector_options = [
-        "F&O Stocks (~223+)", "Non-F&O Stocks (Nifty 500 base)", 
-        "Nifty 50", "Nifty 500", "Nifty Midcap 100"
-    ]
-    selected_sector = st.selectbox("Market Universe", sector_options, index=0, label_visibility="collapsed")
-
-    st.markdown("#### ⏱️ TIMEFRAME")
+    sector_options = ["F&O Stocks (~223+)", "Nifty 50", "Nifty 500"]
+    selected_sector = st.selectbox("Market Universe", sector_options, index=0)
+    
     tf_options = {"1 Day": "1d", "75 Min": "75m", "1 Week": "1wk"}
     tf_label = st.selectbox("Resolution", list(tf_options.keys()), index=0)
     timeframe = tf_options[tf_label]
-
-    st.markdown("#### 🎯 VECTOR")
-    direction = st.radio("Execution Bias", ("🟢 Long (Live in Demand)", "🔴 Short (Live in Supply)"))
-
-    st.markdown("#### 📐 GEOMETRY STRICTNESS")
-    st.info("Locked to Max 2 Bases & 2 Leg-Outs for strict institutional structure.")
-    max_base_body = st.slider("Max Base Body %", 10, 50, 40)
-    min_leg_body = st.slider("Min Leg-Out Body %", 60, 100, 70)
+    
+    direction = st.radio("Target Vector", ("🟢 Fresh Demand", "🔴 Fresh Supply"))
 
 # ==========================================
 # 3. UNIVERSE ROUTING
@@ -135,160 +101,141 @@ def get_index_tickers(sector_name):
         "TORNTPOWER", "TRENT", "TVSMOTOR", "UBL", "ULTRACEMCO", "UNIONBANK", "UPLLTD", "VEDL", "VMM", "VOLTAS", 
         "WAAREEENER", "WIPRO", "YESBANK", "ZEEL", "ZOMATO", "ZYDUSLIFE"
     ]
-    if "F&O Stocks" in sector_name: return [f"{ticker}.NS" for ticker in fo_stocks_list]
-        
-    csv_file = {
-        "Nifty 50": "ind_nifty50list.csv", "Nifty 500": "ind_nifty500list.csv",
-        "Non-F&O Stocks (Nifty 500 base)": "ind_nifty500list.csv", "Nifty Midcap 100": "ind_niftymidcap100list.csv"
-    }.get(sector_name, "ind_nifty500list.csv")
-    
-    mirrors = [
-        f"https://raw.githubusercontent.com/althk/zerobha/main/{csv_file}",
-        f"https://raw.githubusercontent.com/kprohith/nse-stock-analysis/master/{csv_file}"
-    ]
-    
-    fetched_list = []
-    for url in mirrors:
-        try:
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                df = pd.read_csv(io.StringIO(response.text))
-                symbol_col = next((col for col in df.columns if 'Symbol' in col or 'SYMBOL' in col), None)
-                if symbol_col:
-                    fetched_list = [str(s).strip() for s in df[symbol_col]]
-                    break 
-        except Exception: continue
-            
-    if not fetched_list: return []
-    if "Non-F&O" in sector_name:
-        return [f"{ticker}.NS" for ticker in fetched_list if ticker not in fo_stocks_list]
-    return [f"{ticker}.NS" for ticker in fetched_list]
+    if "F&O" in sector_name: return [f"{t}.NS" for t in fo_stocks_list]
+    return [f"{t}.NS" for t in fo_stocks_list][:50]
 
 # ==========================================
-# 4. ACTIVE RETEST ENGINE 
+# 4. RAW S&D GEOMETRY ENGINE
 # ==========================================
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
-def check_active_retest(df, is_bullish, b_body_max, l_body_min):
-    # Enforce freshness: We only care about zones formed in the last 45 bars.
-    # This prevents the "running for a month with no result" issue.
-    df = df.tail(45) 
-    if len(df) < 10: return None
+def check_strict_zone(df, is_bullish):
+    # Only analyze the last 60 bars to find fresh setups instantly
+    df = df.tail(60)
+    if len(df) < 5: return None
     
     current_price = df.iloc[-1]['Close']
     current_low = df.iloc[-1]['Low']
     current_high = df.iloc[-1]['High']
     
+    # Hardcoded Structural Rules
+    MAX_BASE_CANDLES = 2
+    MAX_BASE_BODY_PCT = 45.0  # Tight squeeze required
+    MIN_LEG_BODY_PCT = 65.0   # Strong explosion required
+    LEG_MOMENTUM_MULTIPLIER = 1.5 # Leg must be visibly larger than base
+    
+    # Iterate backward to find the absolute freshest zone
     for i in range(len(df) - 3, 0, -1):
-        for b_len in [1, 2]:
-            for l_len in [1, 2]:
-                if i + b_len + l_len >= len(df): continue
+        for b_len in range(1, MAX_BASE_CANDLES + 1):
+            
+            if i + b_len >= len(df): continue
+            
+            base_slice = df.iloc[i : i + b_len]
+            leg_idx = i + b_len
+            leg_candle = df.iloc[leg_idx]
+            
+            # --- 1. VERIFY BASE (TIGHT DOJI/HAMMER/SPINNING TOP) ---
+            valid_base = True
+            total_base_rng = 0.0
+            
+            for _, candle in base_slice.iterrows():
+                rng = candle['High'] - candle['Low']
+                body = abs(candle['Close'] - candle['Open'])
+                body_pct = (body / rng * 100) if rng > 0 else 0
                 
-                base_slice = df.iloc[i : i + b_len]
-                legout_slice = df.iloc[i + b_len : i + b_len + l_len]
+                if body_pct > MAX_BASE_BODY_PCT:
+                    valid_base = False
+                    break
+                total_base_rng += rng
                 
-                # Verify Base Squeeze
-                base_valid = True
-                for _, candle in base_slice.iterrows():
-                    rng = candle['High'] - candle['Low']
-                    body_pct = 0 if rng == 0 else (abs(candle['Close'] - candle['Open']) / rng) * 100
-                    if body_pct > b_body_max:
-                        base_valid = False
-                        break
-                if not base_valid: continue
+            if not valid_base: continue
+            
+            avg_base_rng = total_base_rng / b_len
+            if avg_base_rng == 0: continue
+            
+            # --- 2. VERIFY LEG-OUT (EXPLOSIVE MOMENTUM) ---
+            leg_rng = leg_candle['High'] - leg_candle['Low']
+            leg_body = abs(leg_candle['Close'] - leg_candle['Open'])
+            leg_body_pct = (leg_body / leg_rng * 100) if leg_rng > 0 else 0
+            
+            # Momentum checks: Large body, physically larger than base range
+            if leg_body_pct < MIN_LEG_BODY_PCT or leg_rng < (avg_base_rng * LEG_MOMENTUM_MULTIPLIER):
+                continue
                 
-                # Verify Leg-Out Power
-                legout_valid = True
-                for _, candle in legout_slice.iterrows():
-                    rng = candle['High'] - candle['Low']
-                    body_pct = 0 if rng == 0 else (abs(candle['Close'] - candle['Open']) / rng) * 100
-                    if body_pct < l_body_min: legout_valid = False
-                    if is_bullish and candle['Close'] <= candle['Open']: legout_valid = False
-                    if not is_bullish and candle['Close'] >= candle['Open']: legout_valid = False
-                if not legout_valid: continue
+            if is_bullish and leg_candle['Close'] <= leg_candle['Open']: continue
+            if not is_bullish and leg_candle['Close'] >= leg_candle['Open']: continue
                 
-                # Define Zone Bounds (Body to Wick)
-                if is_bullish:
-                    highest_body = max(base_slice['Open'].max(), base_slice['Close'].max())
-                    proximal = highest_body
-                    distal = base_slice['Low'].min()
-                    if legout_slice['Close'].iloc[-1] <= proximal: continue
-                else:
-                    lowest_body = min(base_slice['Open'].min(), base_slice['Close'].min())
-                    proximal = lowest_body
-                    distal = base_slice['High'].max()
-                    if legout_slice['Close'].iloc[-1] >= proximal: continue
+            # --- 3. ZONE BOUNDARIES (MERGED GHOST CANDLE) ---
+            if is_bullish:
+                highest_body = max(base_slice['Open'].max(), base_slice['Close'].max())
+                proximal = highest_body
+                distal = base_slice['Low'].min()
+                # NO OVERLAP: Leg out must close cleanly above the base highs
+                if leg_candle['Close'] <= base_slice['High'].max(): continue
+            else:
+                lowest_body = min(base_slice['Open'].min(), base_slice['Close'].min())
+                proximal = lowest_body
+                distal = base_slice['High'].max()
+                # NO OVERLAP: Leg out must close cleanly below the base lows
+                if leg_candle['Close'] >= base_slice['Low'].min(): continue
+                
+            # --- 4. MITIGATION VERIFICATION ---
+            future_data = df.iloc[leg_idx + 1 : -1] # Everything up to current live candle
+            is_mitigated_or_broken = False
+            
+            if not future_data.empty:
+                for _, past_candle in future_data.iterrows():
+                    if is_bullish and past_candle['Low'] <= proximal: is_mitigated_or_broken = True
+                    if not is_bullish and past_candle['High'] >= proximal: is_mitigated_or_broken = True
                     
-                # -------------------------------------------------------------
-                # THE LIVE RETEST FILTER
-                # -------------------------------------------------------------
-                future_data = df.iloc[i + b_len + l_len : -1] # Everything between leg-out and CURRENT live candle
-                
-                is_stale_or_broken = False
-                time_in_zone = 0
-                
-                if not future_data.empty:
-                    for _, past_candle in future_data.iterrows():
-                        # Did it break the zone completely?
-                        if is_bullish and past_candle['Close'] < distal: is_stale_or_broken = True
-                        if not is_bullish and past_candle['Close'] > distal: is_stale_or_broken = True
-                        
-                        # Has it been chopping inside the zone for too long? (> 5 candles inside = stale)
-                        if is_bullish and (past_candle['Low'] <= proximal and past_candle['Close'] >= distal): time_in_zone += 1
-                        if not is_bullish and (past_candle['High'] >= proximal and past_candle['Close'] <= distal): time_in_zone += 1
-                        
-                if time_in_zone > 5: is_stale_or_broken = True
-                
-                # Is it trading inside the zone RIGHT NOW?
-                is_active_now = False
-                if is_bullish:
-                    if current_low <= proximal and current_price >= distal: is_active_now = True
-                else:
-                    if current_high >= proximal and current_price <= distal: is_active_now = True
-                
-                # Final Execution Trigger
-                if not is_stale_or_broken and is_active_now:
-                    risk_pct = (abs(proximal - distal) / max(proximal, 0.01)) * 100
-                    return {
-                        "Zone Type": "🟢 Active Demand" if is_bullish else "🔴 Active Supply",
-                        "Live Price": round(current_price, 2),
-                        "Entry (Proximal)": round(proximal, 2),
-                        "SL (Distal)": round(distal, 2),
-                        "Risk %": f"{risk_pct:.2f}%",
-                        "Status": "🎯 TRADING IN ZONE"
-                    }
+            if is_mitigated_or_broken: continue
+            
+            # --- 5. EXECUTION TRIGGER (IS IT IN THE ZONE NOW?) ---
+            in_zone = False
+            if is_bullish and current_low <= proximal and current_price >= distal: in_zone = True
+            elif not is_bullish and current_high >= proximal and current_price <= distal: in_zone = True
+            
+            status = "🎯 IN ZONE (ACTION)" if in_zone else "⏳ FRESH & WAITING"
+            
+            return {
+                "Zone Type": "🟢 Demand" if is_bullish else "🔴 Supply",
+                "Pattern": f"{b_len} Base ➔ 1 Leg",
+                "Live Price": round(current_price, 2),
+                "Entry": round(proximal, 2),
+                "SL": round(distal, 2),
+                "Status": status
+            }
     return None
 
 # ==========================================
-# 5. EXECUTION 
+# 5. HIGH-SPEED EXECUTION
 # ==========================================
 col1, col2, col3 = st.columns([1, 1, 1])
 
-if st.button("⚡ EXECUTE SYSTEM SCAN", type="primary"):
-    is_bull_setup = "Long" in direction
-    
-    with st.spinner("Authenticating Data Feed..."):
-        ticker_list = get_index_tickers(selected_sector)
+if st.button("⚡ INITIATE HIGH-SPEED SCAN", type="primary"):
+    is_bull = "Demand" in direction
+    ticker_list = get_index_tickers(selected_sector)
     
     if ticker_list:
         with col1: st.metric("TRACKING", f"{len(ticker_list)} ASSETS")
         with col2: st.metric("RESOLUTION", f"{tf_label}")
-        with col3: st.metric("VECTOR", "LONG" if is_bull_setup else "SHORT")
+        with col3: st.metric("VECTOR", "LONG" if is_bull else "SHORT")
 
+        # TRUNCATED PAYLOAD FOR MAXIMUM SPEED
         period_val = "1y" if timeframe == "1wk" else ("60d" if timeframe == "75m" else "6mo")
         interval_val = "15m" if timeframe == "75m" else timeframe
         
         tickers_str = " ".join(ticker_list)
-        
         progress_ui = st.empty()
-        progress_ui.markdown(render_hud_progress(5, "PULLING MARKET DATA..."), unsafe_allow_html=True)
+        progress_ui.markdown(render_hud(10, "DOWNLOADING LIGHTWEIGHT DATA..."), unsafe_allow_html=True)
         
+        # Threads=True allows yfinance to pull all stocks concurrently
         market_data = yf.download(tickers_str, period=period_val, interval=interval_val, group_by='ticker', threads=True)
-        progress_ui.markdown(render_hud_progress(50, "ISOLATING LIVE RETESTS..."), unsafe_allow_html=True)
+        progress_ui.markdown(render_hud(60, "ISOLATING PURE GEOMETRY..."), unsafe_allow_html=True)
         
         results = []
-        total_tickers = len(ticker_list)
+        total = len(ticker_list)
         
         for i, ticker in enumerate(ticker_list):
             try:
@@ -297,8 +244,7 @@ if st.button("⚡ EXECUTE SYSTEM SCAN", type="primary"):
                 
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    
-                    setup = check_active_retest(df, is_bull_setup, max_base_body, min_leg_body)
+                    setup = check_strict_zone(df, is_bull)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -306,24 +252,21 @@ if st.button("⚡ EXECUTE SYSTEM SCAN", type="primary"):
             except Exception:
                 pass
             
-            if i % 15 == 0 or i == total_tickers - 1:
-                current_prog = 50 + ((i + 1) / total_tickers * 50)
-                progress_ui.markdown(render_hud_progress(current_prog, f"SCANNING {ticker.replace('.NS', '')}"), unsafe_allow_html=True)
+            if i % 25 == 0 or i == total - 1:
+                progress_ui.markdown(render_hud(60 + (i/total)*40, f"SCANNING {ticker.replace('.NS', '')}"), unsafe_allow_html=True)
                 
         progress_ui.empty()
-        
         st.divider()
-        st.markdown(f"### 🎯 ACTIONABLE TARGETS ACQUIRED")
+        st.markdown(f"### 🎯 STRICT UNMITIGATED TARGETS")
         
         if results:
-            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Live Price', 'Entry (Proximal)', 'SL (Distal)', 'Risk %', 'Status']]
+            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Pattern', 'Live Price', 'Entry', 'SL', 'Status']]
             
-            styled_df = final_df.style.set_properties(**{
-                'background-color': '#11151C',
-                'color': '#F8FAFC',
-                'border-color': '#1E293B'
-            }).map(lambda v: 'color: #00F2FE; font-weight: 800;' if 'TRADING IN ZONE' in str(v) else ('color: #4FACFE;' if 'Demand' in str(v) else 'color: #FF512F;'), subset=['Status', 'Zone Type'])
+            styled = final_df.style.set_properties(**{
+                'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B'
+            }).map(lambda v: 'color: #F6D365; font-weight: 800;' if 'IN ZONE' in str(v) else 'color: #64748B;', subset=['Status'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 800;' if 'Demand' in str(v) else 'color: #FF512F; font-weight: 800;', subset=['Zone Type'])
             
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.warning("0 MATCHES. No assets are actively testing an unmitigated zone right now.")
+            st.warning("0 MATCHES. The algorithm filtered out all weak setups. No pristine, unmitigated zones found.")
