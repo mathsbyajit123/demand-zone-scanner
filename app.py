@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Momentum & Reversion Scanner", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="20 EMA Swing Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -30,25 +30,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">PURE MOMENTUM SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">20 EMA Wick Fills & BTST Volume Explosions</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">SWING TRADE ENGINE</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">20 EMA Pullbacks & Mechanical Risk Management</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. COMMAND CENTER
+# 2. MARKET UNIVERSE
 # ==========================================
-with st.sidebar:
-    st.markdown("### **COMMAND CENTER**")
-    st.divider()
-    
-    strategy = st.radio("Select Execution Strategy", (
-        "⚡ BTST Power Close (Run @ 3:15 PM)", 
-        "📉 20 EMA Pullback (Run Post-Market)"
-    ))
-    
-    st.divider()
-    st.caption("Scanning NSE F&O Universe (~225 Highly Liquid Stocks)")
-
-# F&O Universe List
 def get_fo_tickers():
     return [
         "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
@@ -79,34 +66,8 @@ def get_fo_tickers():
     ]
 
 # ==========================================
-# 3. ALGORITHMIC ENGINES
+# 3. ALGORITHMIC ENGINE (SWING ONLY)
 # ==========================================
-def scan_btst(df):
-    """Hunts for end-of-day volume spikes closing near HOD in an uptrend."""
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['Avg_Vol_20'] = df['Volume'].rolling(window=20).mean().shift(1)
-    
-    c = df.iloc[-1] # Current Day
-    
-    # Rule 1: Uptrend Check
-    if c['Close'] < c['EMA_50']: return None
-    
-    # Rule 2: Closing within 1% of High of the Day (No upper wick trap)
-    if c['Close'] < (c['High'] * 0.99): return None
-    
-    # Rule 3: Must be a Green Candle
-    if c['Close'] <= c['Open']: return None
-    
-    # Rule 4: Volume Explosion (1.5x greater than average)
-    if c['Volume'] < (1.5 * c['Avg_Vol_20']): return None
-    
-    return {
-        "Setup": "⚡ BTST Momentum",
-        "Live Price": round(c['Close'], 2),
-        "Vol Spike": f"{round((c['Volume'] / c['Avg_Vol_20']), 1)}x Avg",
-        "Action": "🎯 BUY @ 3:20 PM"
-    }
-
 def scan_20_ema(df):
     """Hunts for pullbacks to the 20 EMA with absorption logic and calculates Wick Fill limits."""
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -132,7 +93,7 @@ def scan_20_ema(df):
     if not (is_hammer or is_green_bounce): return None
     
     # --- WICK FILL MATH & SL CALCULATION ---
-    # If the wick is large, it calculates the 50% midpoint limit order. Otherwise, it uses the High break.
+    # If the wick is large, calculate the 50% midpoint limit order. Otherwise, use High break.
     if lower_wick > (c['Close'] * 0.01): 
         entry_price = c['Low'] + (lower_wick / 2)
         entry_type = "50% Wick Limit"
@@ -155,13 +116,13 @@ def scan_20_ema(df):
 # ==========================================
 # 4. EXECUTION
 # ==========================================
-if st.button("🔥 INITIATE RAW MARKET SCAN", type="primary"):
+if st.button("🔥 SCAN POST-MARKET SWING SETUPS", type="primary"):
     ticker_list = [f"{t}.NS" for t in get_fo_tickers()]
     
     st.markdown(f"#### Analyzing **{len(ticker_list)}** F&O Stocks...")
     progress_bar = st.progress(0)
     
-    # Pull Daily Data. 100 days is enough to cleanly calculate a 50 EMA and 20-Day Vol Avg.
+    # Pull Daily Data. 100 days ensures moving averages calculate smoothly.
     market_data = yf.download(" ".join(ticker_list), period="100d", interval="1d", group_by='ticker', threads=True)
     
     results = []
@@ -173,10 +134,7 @@ if st.button("🔥 INITIATE RAW MARKET SCAN", type="primary"):
             if df.empty or len(df) < 55:
                 continue
             
-            if "BTST" in strategy:
-                setup = scan_btst(df)
-            else:
-                setup = scan_20_ema(df)
+            setup = scan_20_ema(df)
                 
             if setup:
                 setup['Asset'] = ticker.replace(".NS", "")
@@ -190,17 +148,13 @@ if st.button("🔥 INITIATE RAW MARKET SCAN", type="primary"):
     st.divider()
     
     if results:
-        st.success(f"Successfully isolated {len(results)} high-probability institutional setups.")
+        st.success(f"Successfully isolated {len(results)} highly-probable 20 EMA pullbacks.")
         
-        # Display Ordering Based on Strategy
-        if "BTST" in strategy:
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Vol Spike', 'Action']]
-        else:
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Limit Entry', 'Hard SL (1% Buf)', '1:2 Target']]
+        final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Limit Entry', 'Hard SL (1% Buf)', '1:2 Target']]
         
         styled = final_df.style.set_properties(**{
             'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B'
-        }).map(lambda v: 'color: #00F2FE; font-weight: 900;' if 'BUY' in str(v) else 'color: #F8FAFC;', subset=['Action'] if "BTST" in strategy else [])
+        })
         
         st.dataframe(styled, use_container_width=True, hide_index=True)
     else:
