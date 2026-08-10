@@ -3,13 +3,14 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import warnings
+import io, requests
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="20 EMA Swing Scanner", layout="wide")
+st.set_page_config(page_title="Apex EMA Trend Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -27,17 +28,47 @@ st.markdown("""
         padding: 14px 24px; font-size: 16px; font-weight: 700; letter-spacing: 2px;
         box-shadow: 0 4px 20px rgba(0, 198, 255, 0.4); width: 100%; text-transform: uppercase;
     }
+    .metric-box {
+        background-color: #11151C; border-radius: 8px; padding: 20px;
+        border: 1px solid #1E293B; box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        text-align: center;
+    }
+    .metric-box span { color: #4FACFE; font-weight: 600; letter-spacing: 1px; font-size: 14px; }
+    .metric-box h2 { color: #F8FAFC; margin: 0; padding-top: 5px; font-size: 28px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">SWING TRADE ENGINE</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">20 EMA Pullbacks & Mechanical Risk Management</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">APEX EMA SCANNER</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Pure Momentum Filter: 20 EMA & 50 EMA</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. MARKET UNIVERSE
+# 2. COMMAND CENTER
 # ==========================================
-def get_fo_tickers():
-    return [
+with st.sidebar:
+    st.markdown("### **COMMAND CENTER**")
+    st.divider()
+    
+    sector_options = ["F&O Stocks (~225)", "Nifty 50", "Nifty 500"]
+    selected_sector = st.selectbox("Market Universe", sector_options, index=0)
+    
+    tf_options = {
+        "15 Min": "15m",
+        "75 Min": "75m", 
+        "1 Day": "1d", 
+        "1 Week": "1wk"
+    }
+    tf_label = st.selectbox("Timeframe", list(tf_options.keys()), index=2)
+    timeframe = tf_options[tf_label]
+    
+    st.divider()
+    direction = st.radio("Target Trend Vector", ("🟢 Bullish (Long)", "🔴 Bearish (Short)"))
+
+# ==========================================
+# 3. DATA ROUTING
+# ==========================================
+@st.cache_data(ttl=3600)
+def get_index_tickers(sector_name):
+    fo_stocks_list = [
         "360ONE", "AARTIIND", "ABB", "ABBOTINDIA", "ABCAPITAL", "ABFRL", "ACC", "ADANIENSOL", "ADANIENT", "ADANIPORTS", 
         "ADANIPOWER", "ALKEM", "AMBER", "AMBUJACEM", "ANGELONE", "APLAPOLLO", "APOLLOHOSP", "APOLLOTYRE", "ASHOKLEY", 
         "ASIANPAINT", "ASTRAL", "ATUL", "AUBANK", "AUROPHARMA", "AXISBANK", "BAJAJ-AUTO", "BAJAJFINSV", "BAJAJHLDNG", 
@@ -64,98 +95,119 @@ def get_fo_tickers():
         "TORNTPOWER", "TRENT", "TVSMOTOR", "UBL", "ULTRACEMCO", "UNIONBANK", "UPLLTD", "VEDL", "VMM", "VOLTAS", 
         "WAAREEENER", "WIPRO", "YESBANK", "ZEEL", "ZOMATO", "ZYDUSLIFE"
     ]
+    if "F&O" in sector_name: return [f"{t}.NS" for t in fo_stocks_list]
+    csv_file = "ind_nifty50list.csv" if "50" in sector_name and "500" not in sector_name else "ind_nifty500list.csv"
+    try:
+        response = requests.get(f"https://raw.githubusercontent.com/althk/zerobha/main/{csv_file}", timeout=10)
+        df = pd.read_csv(io.StringIO(response.text))
+        return [f"{s.strip()}.NS" for s in df['Symbol']]
+    except:
+        return [f"{t}.NS" for t in fo_stocks_list]
+
+def resample_to_75m(df):
+    return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 3. ALGORITHMIC ENGINE (SWING ONLY)
+# 4. ALGORITHMIC ENGINE
 # ==========================================
-def scan_20_ema(df):
-    """Hunts for pullbacks to the 20 EMA with absorption logic and calculates Wick Fill limits."""
+def scan_ema_trend(df, is_bullish):
+    if len(df) < 55: return None
+    
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     
     c = df.iloc[-1]
     
-    # Rule 1: Strict Uptrend (20 EMA > 50 EMA)
-    if c['EMA_20'] <= c['EMA_50']: return None
+    price = c['Close']
+    ema_20 = c['EMA_20']
+    ema_50 = c['EMA_50']
     
-    # Rule 2: The Pullback Tap (Low of candle must pierce or touch the 20 EMA zone)
-    if c['Low'] > (c['EMA_20'] * 1.015): return None # Too far above
-    if c['High'] < (c['EMA_20'] * 0.985): return None # Too far below
-    
-    body = abs(c['Close'] - c['Open'])
-    lower_wick = min(c['Open'], c['Close']) - c['Low']
-    upper_wick = c['High'] - max(c['Open'], c['Close'])
-    
-    # Rule 3: The Proof of Life (Must be a Hammer OR a solid green candle bouncing off the line)
-    is_hammer = (lower_wick > (1.5 * body)) and (upper_wick < body)
-    is_green_bounce = (c['Close'] > c['Open']) and (c['Low'] <= c['EMA_20'])
-    
-    if not (is_hammer or is_green_bounce): return None
-    
-    # --- WICK FILL MATH & SL CALCULATION ---
-    # If the wick is large, calculate the 50% midpoint limit order. Otherwise, use High break.
-    if lower_wick > (c['Close'] * 0.01): 
-        entry_price = c['Low'] + (lower_wick / 2)
-        entry_type = "50% Wick Limit"
+    if is_bullish:
+        if price > ema_50 and ema_20 > ema_50:
+            return {
+                "Trend": "🟢 Bullish",
+                "Live Price": round(price, 2),
+                "20 EMA": round(ema_20, 2),
+                "50 EMA": round(ema_50, 2),
+                "Status": "✅ Up-Trend Verified"
+            }
     else:
-        entry_price = c['High'] * 1.002
-        entry_type = "Break of High Limit"
-        
-    hard_sl = c['Low'] * 0.99
-    risk_rupees = entry_price - hard_sl
-    target = entry_price + (risk_rupees * 2) # Strict 1:2 R:R
-    
-    return {
-        "Setup": "📉 20 EMA Reversal",
-        "Live Price": round(c['Close'], 2),
-        "Limit Entry": f"₹{round(entry_price, 2)} ({entry_type})",
-        "Hard SL (1% Buf)": round(hard_sl, 2),
-        "1:2 Target": round(target, 2)
-    }
+        if price < ema_50 and ema_20 < ema_50:
+            return {
+                "Trend": "🔴 Bearish",
+                "Live Price": round(price, 2),
+                "20 EMA": round(ema_20, 2),
+                "50 EMA": round(ema_50, 2),
+                "Status": "🔻 Down-Trend Verified"
+            }
+            
+    return None
 
 # ==========================================
-# 4. EXECUTION
+# 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 SCAN POST-MARKET SWING SETUPS", type="primary"):
-    ticker_list = [f"{t}.NS" for t in get_fo_tickers()]
+if st.button("🔥 RUN LIVE SCAN", type="primary"):
+    is_bull = "Bullish" in direction
+    ticker_list = get_index_tickers(selected_sector)
+    total_stocks = len(ticker_list)
     
-    st.markdown(f"#### Analyzing **{len(ticker_list)}** F&O Stocks...")
-    progress_bar = st.progress(0)
-    
-    # Pull Daily Data. 100 days ensures moving averages calculate smoothly.
-    market_data = yf.download(" ".join(ticker_list), period="100d", interval="1d", group_by='ticker', threads=True)
-    
-    results = []
-    total = len(ticker_list)
-    
-    for i, ticker in enumerate(ticker_list):
-        try:
-            df = market_data[ticker].dropna() if len(ticker_list) > 1 else market_data.dropna()
-            if df.empty or len(df) < 55:
-                continue
+    if ticker_list:
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1: st.markdown(f"<div class='metric-box'><span>TRACKING</span><h2>{total_stocks} ASSETS</h2></div>", unsafe_allow_html=True)
+        with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
+
+        st.write("")
+        
+        # UI Placeholder for the increasing counter
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
+        
+        progress_text.markdown("#### ⏳ Fetching Market Data Packets (Fast Download)...")
+        
+        # Batch download for maximum speed
+        interval_val = "15m" if timeframe == "75m" else timeframe
+        period_val = "100d" if timeframe in ["1d", "1wk"] else "20d"
+        
+        market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
+        
+        results = []
+        
+        # The Dynamic Loop Counter
+        for i, ticker in enumerate(ticker_list):
+            # Update the increasing visual counter: "Analyzing X out of Y"
+            progress_text.markdown(f"#### 🔍 Analyzing {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_bar.progress((i + 1) / total_stocks)
             
-            setup = scan_20_ema(df)
+            try:
+                df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 
-            if setup:
-                setup['Asset'] = ticker.replace(".NS", "")
-                results.append(setup)
-        except:
-            pass
+                if not df.empty:
+                    if timeframe == '75m': df = resample_to_75m(df)
+                    
+                    setup = scan_ema_trend(df, is_bull)
+                    
+                    if setup:
+                        setup['Asset'] = ticker.replace(".NS", "")
+                        results.append(setup)
+            except:
+                pass
+                
+        progress_text.empty()
+        progress_bar.empty()
+        st.divider()
+        
+        if results:
+            st.success(f"Successfully isolated {len(results)} assets matching the strict trend criteria.")
             
-        progress_bar.progress((i + 1) / total)
-        
-    progress_bar.empty()
-    st.divider()
-    
-    if results:
-        st.success(f"Successfully isolated {len(results)} highly-probable 20 EMA pullbacks.")
-        
-        final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Limit Entry', 'Hard SL (1% Buf)', '1:2 Target']]
-        
-        styled = final_df.style.set_properties(**{
-            'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B'
-        })
-        
-        st.dataframe(styled, use_container_width=True, hide_index=True)
-    else:
-        st.error("0 MATCHES. The algorithm filtered out the noise. No stocks meet the strict mathematical criteria right now. Protect your capital and wait for the next session.")
+            final_df = pd.DataFrame(results)[['Asset', 'Trend', 'Live Price', '20 EMA', '50 EMA', 'Status']]
+            
+            # Styling colors
+            styled = final_df.style.set_properties(**{
+                'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
+            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if 'Bullish' in str(v) else ('color: #FF0000; font-weight: 800;' if 'Bearish' in str(v) else ''), subset=['Trend'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 700;', subset=['Status'])
+            
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+        else:
+            st.error("0 MATCHES. No assets currently meet the strict moving average criteria on this timeframe.")
