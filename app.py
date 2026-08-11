@@ -111,6 +111,7 @@ def resample_to_75m(df):
 # 4. ALGORITHMIC ENGINE
 # ==========================================
 def scan_ema_trend(df, is_bullish):
+    # Ensures we have enough data to calculate the 50 EMA regardless of timeframe
     if len(df) < 55: return None
     
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -159,23 +160,29 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
 
         st.write("")
         
-        # UI Placeholder for the increasing counter
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
         progress_text.markdown("#### ⏳ Fetching Market Data Packets (Fast Download)...")
         
-        # Batch download for maximum speed
+        # FIXED: Dynamic period fetching to ensure we always have 50+ candles.
         interval_val = "15m" if timeframe == "75m" else timeframe
-        period_val = "100d" if timeframe in ["1d", "1wk"] else "20d"
+        if timeframe == "1wk":
+            period_val = "3y"
+        elif timeframe == "1d":
+            period_val = "1y"
+        elif timeframe == "75m":
+            period_val = "60d"
+        else:
+            period_val = "20d"
         
+        # Batch download for maximum speed
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         
         # The Dynamic Loop Counter
         for i, ticker in enumerate(ticker_list):
-            # Update the increasing visual counter: "Analyzing X out of Y"
             progress_text.markdown(f"#### 🔍 Analyzing {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             
@@ -202,7 +209,6 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
             
             final_df = pd.DataFrame(results)[['Asset', 'Trend', 'Live Price', '20 EMA', '50 EMA', 'Status']]
             
-            # Styling colors
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if 'Bullish' in str(v) else ('color: #FF0000; font-weight: 800;' if 'Bearish' in str(v) else ''), subset=['Trend'])\
