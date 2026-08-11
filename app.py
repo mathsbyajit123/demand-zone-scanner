@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Apex EMA Trend Scanner", layout="wide")
+st.set_page_config(page_title="Strict S&D Pullback Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -38,8 +38,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">APEX EMA SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Pure Momentum Filter: 20 EMA & 50 EMA</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">A+ S&D PULLBACK TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Strict 1-3 Base Candles | Overpowering Leg-Outs | Active Proximity Tracking</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -62,7 +62,7 @@ with st.sidebar:
     timeframe = tf_options[tf_label]
     
     st.divider()
-    direction = st.radio("Target Trend Vector", ("🟢 Bullish (Long)", "🔴 Bearish (Short)"))
+    direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Pullbacks)", "🔴 Supply (Sell Pullbacks)"))
 
 # ==========================================
 # 3. DATA ROUTING
@@ -109,47 +109,113 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. ALGORITHMIC ENGINE
+# 4. STRICT S&D ENGINE
 # ==========================================
-def scan_ema_trend(df, is_bullish):
-    # Ensures we have enough data to calculate the 50 EMA regardless of timeframe
-    if len(df) < 55: return None
+def analyze_gtf_candles(df):
+    df['Range'] = df['High'] - df['Low']
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
     
-    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    conditions = [
+        (df['Body_Pct'] > 50) & (df['Close'] > df['Open']),  # Green Exciting
+        (df['Body_Pct'] > 50) & (df['Close'] < df['Open']),  # Red Exciting
+        (df['Body_Pct'] <= 50)                               # Base Candle
+    ]
+    choices = ['Green Exciting', 'Red Exciting', 'Base']
+    df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
+    return df
+
+def scan_strict_pullbacks(df, is_bullish, tf_label):
+    if len(df) < 20: return None
     
-    c = df.iloc[-1]
+    df = analyze_gtf_candles(df)
     
-    price = c['Close']
-    ema_20 = c['EMA_20']
-    ema_50 = c['EMA_50']
+    current_price = df.iloc[-1]['Close']
+    current_low = df.iloc[-1]['Low']
+    current_high = df.iloc[-1]['High']
     
-    if is_bullish:
-        if price > ema_50 and ema_20 > ema_50:
-            return {
-                "Trend": "🟢 Bullish",
-                "Live Price": round(price, 2),
-                "20 EMA": round(ema_20, 2),
-                "50 EMA": round(ema_50, 2),
-                "Status": "✅ Up-Trend Verified"
-            }
-    else:
-        if price < ema_50 and ema_20 < ema_50:
-            return {
-                "Trend": "🔴 Bearish",
-                "Live Price": round(price, 2),
-                "20 EMA": round(ema_20, 2),
-                "50 EMA": round(ema_50, 2),
-                "Status": "🔻 Down-Trend Verified"
-            }
+    # Proximity Buffer (%)
+    if "Month" in tf_label: max_dist_pct = 3.0
+    elif "Week" in tf_label: max_dist_pct = 1.0
+    else: max_dist_pct = 1.5
+
+    search_df = df.tail(60) # Scan last 60 bars for zones
+    
+    for i in range(len(search_df) - 3, 0, -1):
+        leg_in = search_df.iloc[i-1]
+        
+        # UPGRADE 1: Strict Min 1 to Max 3 Base Candles ONLY
+        for base_len in range(1, 4):
+            if i + base_len >= len(search_df): continue
             
+            base_candles = search_df.iloc[i : i + base_len]
+            leg_out = search_df.iloc[i + base_len]
+            
+            if not all(base_candles['GTF_Type'] == 'Base'): continue
+            
+            # --- DEMAND LOGIC ---
+            if is_bullish and leg_out['GTF_Type'] == 'Green Exciting':
+                # UPGRADE 2: Leg-Out must close ABOVE the Leg-In's High
+                if leg_out['Close'] <= leg_in['High']: continue 
+                
+                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
+                distal = base_candles['Low'].min()
+                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else ('RBR' if leg_in['GTF_Type'] == 'Green Exciting' else None)
+                
+            # --- SUPPLY LOGIC ---
+            elif not is_bullish and leg_out['GTF_Type'] == 'Red Exciting':
+                # UPGRADE 2: Leg-Out must close BELOW the Leg-In's Low
+                if leg_out['Close'] >= leg_in['Low']: continue 
+                
+                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
+                distal = base_candles['High'].max()
+                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else ('DBD' if leg_in['GTF_Type'] == 'Red Exciting' else None)
+                
+            else:
+                continue
+                
+            if not pattern: continue
+            
+            # --- UPGRADE 3: VALIDATION & PROXIMITY PULLBACK ---
+            future_data = search_df.iloc[i + base_len + 1 : -1]
+            is_broken = False
+            
+            if not future_data.empty:
+                for _, past_candle in future_data.iterrows():
+                    # Check if zone was destroyed by a closing candle
+                    if is_bullish and past_candle['Close'] < distal: is_broken = True
+                    if not is_bullish and past_candle['Close'] > distal: is_broken = True
+                        
+            if is_broken: continue
+            
+            # Active Pullback Verification
+            pullback_detected = False
+            
+            if is_bullish:
+                # Must be very near proximal, and must NOT have closed below distal today
+                if current_price >= distal and current_price <= (proximal * (1 + (max_dist_pct / 100))):
+                    pullback_detected = True
+            else:
+                # Must be very near proximal, and must NOT have closed above distal today
+                if current_price <= distal and current_price >= (proximal * (1 - (max_dist_pct / 100))):
+                    pullback_detected = True
+            
+            if pullback_detected:
+                return {
+                    "Zone Type": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
+                    "Base Form": f"{base_len} Candles",
+                    "Live Price": round(current_price, 2),
+                    "Entry (Prox)": round(proximal, 2),
+                    "SL (Distal)": round(distal, 2),
+                    "Action": "🎯 PULLBACK DETECTED"
+                }
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN LIVE SCAN", type="primary"):
-    is_bull = "Bullish" in direction
+if st.button("🔥 RUN S&D PULLBACK SCAN", type="primary"):
+    is_bull = "Demand" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -164,28 +230,19 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching Market Data Packets (Fast Download)...")
+        progress_text.markdown("#### ⏳ Fetching Market Data Packets...")
         
-        # DYNAMIC PERIOD FETCHING: Adjusts based on timeframe so the 50 EMA always has enough historical candles.
         interval_val = "1mo" if timeframe == "1mo" else ("15m" if timeframe == "75m" else timeframe)
+        if timeframe == "1mo": period_val = "5y"
+        elif timeframe == "1wk": period_val = "2y"
+        elif timeframe == "1d": period_val = "6mo"
+        elif timeframe == "75m": period_val = "30d"
+        else: period_val = "10d"
         
-        if timeframe == "1mo":
-            period_val = "10y"
-        elif timeframe == "1wk":
-            period_val = "3y"
-        elif timeframe == "1d":
-            period_val = "1y"
-        elif timeframe == "75m":
-            period_val = "60d"
-        else:
-            period_val = "20d"
-        
-        # Batch download for maximum speed
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         
-        # The Dynamic Loop Counter
         for i, ticker in enumerate(ticker_list):
             progress_text.markdown(f"#### 🔍 Analyzing {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
@@ -196,7 +253,7 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
                     
-                    setup = scan_ema_trend(df, is_bull)
+                    setup = scan_strict_pullbacks(df, is_bull, tf_label)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -209,15 +266,15 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets matching the strict trend criteria.")
+            st.success(f"Successfully isolated {len(results)} assets actively pulling back into an A+ Structural Zone.")
             
-            final_df = pd.DataFrame(results)[['Asset', 'Trend', 'Live Price', '20 EMA', '50 EMA', 'Status']]
+            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Base Form', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
-            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if 'Bullish' in str(v) else ('color: #FF0000; font-weight: 800;' if 'Bearish' in str(v) else ''), subset=['Trend'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 700;', subset=['Status'])
+            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Zone Type'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 700;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. No assets currently meet the strict moving average criteria on this timeframe.")
+            st.error("0 MATCHES. The strict 1-3 Base Candle and Leg-Out rules filtered out the noise. No stocks are pulling back to a verified A+ zone right now.")
