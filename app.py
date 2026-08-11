@@ -55,7 +55,8 @@ with st.sidebar:
         "15 Min": "15m",
         "75 Min": "75m", 
         "1 Day": "1d", 
-        "1 Week": "1wk"
+        "1 Week": "1wk",
+        "1 Month": "1mo"
     }
     tf_label = st.selectbox("Timeframe", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
@@ -165,9 +166,12 @@ if st.button("🔥 RUN LIVE SCAN", type="primary"):
         
         progress_text.markdown("#### ⏳ Fetching Market Data Packets (Fast Download)...")
         
-        # FIXED: Dynamic period fetching to ensure we always have 50+ candles.
-        interval_val = "15m" if timeframe == "75m" else timeframe
-        if timeframe == "1wk":
+        # DYNAMIC PERIOD FETCHING: Adjusts based on timeframe so the 50 EMA always has enough historical candles.
+        interval_val = "1mo" if timeframe == "1mo" else ("15m" if timeframe == "75m" else timeframe)
+        
+        if timeframe == "1mo":
+            period_val = "10y"
+        elif timeframe == "1wk":
             period_val = "3y"
         elif timeframe == "1d":
             period_val = "1y"
