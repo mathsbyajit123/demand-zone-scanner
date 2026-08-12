@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Strict S&D Pullback Scanner", layout="wide")
+st.set_page_config(page_title="Apex 8-20% S&D Scanner", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 42px; letter-spacing: -1px;
+        font-weight: 900; font-size: 40px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -38,8 +38,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">A+ S&D PULLBACK TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Strict 1-3 Base Candles | Overpowering Leg-Outs | Active Proximity Tracking</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">APEX 8-20% PULLBACK ENGINE</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Max 2 Base Candles | 8%-20% Rally Leg-Out | Institutional HTF Zones</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -52,20 +52,20 @@ with st.sidebar:
     selected_sector = st.selectbox("Market Universe", sector_options, index=0)
     
     tf_options = {
-        "15 Min": "15m",
-        "75 Min": "75m", 
         "1 Day": "1d", 
         "1 Week": "1wk",
-        "1 Month": "1mo"
+        "1 Month": "1mo",
+        "3 Month": "3mo",
+        "6 Month": "6mo"
     }
-    tf_label = st.selectbox("Timeframe", list(tf_options.keys()), index=2)
+    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=0)
     timeframe = tf_options[tf_label]
     
     st.divider()
     direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Pullbacks)", "🔴 Supply (Sell Pullbacks)"))
 
 # ==========================================
-# 3. DATA ROUTING
+# 3. DATA ROUTING & RESAMPLING
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
@@ -105,11 +105,12 @@ def get_index_tickers(sector_name):
     except:
         return [f"{t}.NS" for t in fo_stocks_list]
 
-def resample_to_75m(df):
-    return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+def resample_to_6mo(df):
+    """Custom resampler to generate 6-Month institutional candles from 1-Month data."""
+    return df.resample('6ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. STRICT S&D ENGINE
+# 4. STRICT 8-20% S&D ENGINE
 # ==========================================
 def analyze_gtf_candles(df):
     df['Range'] = df['High'] - df['Low']
@@ -125,27 +126,20 @@ def analyze_gtf_candles(df):
     df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
     return df
 
-def scan_strict_pullbacks(df, is_bullish, tf_label):
-    if len(df) < 20: return None
+def scan_ultra_strict_zones(df, is_bullish):
+    if len(df) < 10: return None
     
     df = analyze_gtf_candles(df)
     
     current_price = df.iloc[-1]['Close']
-    current_low = df.iloc[-1]['Low']
-    current_high = df.iloc[-1]['High']
     
-    # Proximity Buffer (%)
-    if "Month" in tf_label: max_dist_pct = 3.0
-    elif "Week" in tf_label: max_dist_pct = 1.0
-    else: max_dist_pct = 1.5
-
-    search_df = df.tail(60) # Scan last 60 bars for zones
+    search_df = df.tail(60) # Scan last 60 bars
     
     for i in range(len(search_df) - 3, 0, -1):
         leg_in = search_df.iloc[i-1]
         
-        # UPGRADE 1: Strict Min 1 to Max 3 Base Candles ONLY
-        for base_len in range(1, 4):
+        # UPGRADE 1: Strict Min 1 to Max 2 Base Candles ONLY
+        for base_len in range(1, 3):
             if i + base_len >= len(search_df): continue
             
             base_candles = search_df.iloc[i : i + base_len]
@@ -160,6 +154,11 @@ def scan_strict_pullbacks(df, is_bullish, tf_label):
                 
                 proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
                 distal = base_candles['Low'].min()
+                
+                # UPGRADE 3: Rally must be between 8% and 20%
+                rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
+                if rally_pct < 8.0 or rally_pct > 20.0: continue
+                
                 pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else ('RBR' if leg_in['GTF_Type'] == 'Green Exciting' else None)
                 
             # --- SUPPLY LOGIC ---
@@ -169,6 +168,11 @@ def scan_strict_pullbacks(df, is_bullish, tf_label):
                 
                 proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
                 distal = base_candles['High'].max()
+                
+                # UPGRADE 3: Drop (Rally downward) must be between 8% and 20%
+                rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
+                if rally_pct < 8.0 or rally_pct > 20.0: continue
+                
                 pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else ('DBD' if leg_in['GTF_Type'] == 'Red Exciting' else None)
                 
             else:
@@ -176,45 +180,44 @@ def scan_strict_pullbacks(df, is_bullish, tf_label):
                 
             if not pattern: continue
             
-            # --- UPGRADE 3: VALIDATION & PROXIMITY PULLBACK ---
+            # --- VALIDATION (NOT BROKEN) ---
             future_data = search_df.iloc[i + base_len + 1 : -1]
             is_broken = False
             
             if not future_data.empty:
                 for _, past_candle in future_data.iterrows():
-                    # Check if zone was destroyed by a closing candle
                     if is_bullish and past_candle['Close'] < distal: is_broken = True
                     if not is_bullish and past_candle['Close'] > distal: is_broken = True
                         
             if is_broken: continue
             
-            # Active Pullback Verification
-            pullback_detected = False
+            # --- UPGRADE 4: TRADING AT THE ZONE (ACTIVE PULLBACK) ---
+            trading_at_zone = False
             
             if is_bullish:
-                # Must be very near proximal, and must NOT have closed below distal today
-                if current_price >= distal and current_price <= (proximal * (1 + (max_dist_pct / 100))):
-                    pullback_detected = True
+                # Must be physically touching or inside the zone, NOT closed below distal
+                if current_price >= distal and current_price <= (proximal * 1.015): 
+                    trading_at_zone = True
             else:
-                # Must be very near proximal, and must NOT have closed above distal today
-                if current_price <= distal and current_price >= (proximal * (1 - (max_dist_pct / 100))):
-                    pullback_detected = True
+                if current_price <= distal and current_price >= (proximal * 0.985):
+                    trading_at_zone = True
             
-            if pullback_detected:
+            if trading_at_zone:
                 return {
                     "Zone Type": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
-                    "Base Form": f"{base_len} Candles",
+                    "Base Form": f"{base_len} Candle(s)",
+                    "Momentum": f"{round(rally_pct, 2)}% Rally",
                     "Live Price": round(current_price, 2),
                     "Entry (Prox)": round(proximal, 2),
                     "SL (Distal)": round(distal, 2),
-                    "Action": "🎯 PULLBACK DETECTED"
+                    "Action": "🎯 AT ZONE"
                 }
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN S&D PULLBACK SCAN", type="primary"):
+if st.button("🔥 RUN 8-20% PULLBACK SCAN", type="primary"):
     is_bull = "Demand" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
@@ -230,14 +233,24 @@ if st.button("🔥 RUN S&D PULLBACK SCAN", type="primary"):
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching Market Data Packets...")
+        progress_text.markdown("#### ⏳ Fetching Historical Market Data...")
         
-        interval_val = "1mo" if timeframe == "1mo" else ("15m" if timeframe == "75m" else timeframe)
-        if timeframe == "1mo": period_val = "5y"
-        elif timeframe == "1wk": period_val = "2y"
-        elif timeframe == "1d": period_val = "6mo"
-        elif timeframe == "75m": period_val = "30d"
-        else: period_val = "10d"
+        # Setting API payloads for massive historical data requirements
+        if timeframe == "6mo":
+            interval_val = "1mo"
+            period_val = "max"
+        elif timeframe == "3mo":
+            interval_val = "3mo"
+            period_val = "max"
+        elif timeframe == "1mo":
+            interval_val = "1mo"
+            period_val = "max"
+        elif timeframe == "1wk":
+            interval_val = "1wk"
+            period_val = "5y"
+        else: # 1d
+            interval_val = "1d"
+            period_val = "2y"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
@@ -251,9 +264,11 @@ if st.button("🔥 RUN S&D PULLBACK SCAN", type="primary"):
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 
                 if not df.empty:
-                    if timeframe == '75m': df = resample_to_75m(df)
+                    # Execute 6-Month Resampling if requested
+                    if timeframe == '6mo': 
+                        df = resample_to_6mo(df)
                     
-                    setup = scan_strict_pullbacks(df, is_bull, tf_label)
+                    setup = scan_ultra_strict_zones(df, is_bull)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -266,15 +281,16 @@ if st.button("🔥 RUN S&D PULLBACK SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets actively pulling back into an A+ Structural Zone.")
+            st.success(f"Successfully isolated {len(results)} assets trading perfectly at an 8-20% Institutional Zone.")
             
-            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Base Form', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
+            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Base Form', 'Momentum', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Zone Type'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 700;', subset=['Action'])
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Momentum'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The strict 1-3 Base Candle and Leg-Out rules filtered out the noise. No stocks are pulling back to a verified A+ zone right now.")
+            st.error("0 MATCHES. The strict 8% to 20% Momentum Rule filtered the noise. No stocks are currently trading at a verified zone.")
