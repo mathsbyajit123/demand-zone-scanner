@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Apex 8-20% S&D Scanner", layout="wide")
+st.set_page_config(page_title="Apex Flip Zone Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -38,8 +38,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">APEX 8-20% PULLBACK ENGINE</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Max 2 Base Candles | 8%-20% Rally Leg-Out | Institutional HTF Zones</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">ROLE REVERSAL (FLIP ZONE) ENGINE</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Scans for Broken Demand turned Supply & Broken Supply turned Demand</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -54,18 +54,19 @@ with st.sidebar:
     tf_options = {
         "1 Day": "1d", 
         "1 Week": "1wk",
-        "1 Month": "1mo",
-        "3 Month": "3mo",
-        "6 Month": "6mo"
+        "1 Month": "1mo"
     }
-    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=0)
+    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
     st.divider()
-    direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Pullbacks)", "🔴 Supply (Sell Pullbacks)"))
+    direction = st.radio("Target Flip Setup", (
+        "🔴 Demand turned Supply (Short Pullbacks)", 
+        "🟢 Supply turned Demand (Long Pullbacks)"
+    ))
 
 # ==========================================
-# 3. DATA ROUTING & RESAMPLING
+# 3. DATA ROUTING 
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
@@ -105,12 +106,8 @@ def get_index_tickers(sector_name):
     except:
         return [f"{t}.NS" for t in fo_stocks_list]
 
-def resample_to_6mo(df):
-    """Custom resampler to generate 6-Month institutional candles from 1-Month data."""
-    return df.resample('6ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-
 # ==========================================
-# 4. STRICT 8-20% S&D ENGINE
+# 4. STRICT FLIP ZONE (ROLE REVERSAL) ENGINE
 # ==========================================
 def analyze_gtf_candles(df):
     df['Range'] = df['High'] - df['Low']
@@ -118,107 +115,123 @@ def analyze_gtf_candles(df):
     df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
     
     conditions = [
-        (df['Body_Pct'] > 50) & (df['Close'] > df['Open']),  # Green Exciting
-        (df['Body_Pct'] > 50) & (df['Close'] < df['Open']),  # Red Exciting
-        (df['Body_Pct'] <= 50)                               # Base Candle
+        (df['Body_Pct'] > 50) & (df['Close'] > df['Open']),  
+        (df['Body_Pct'] > 50) & (df['Close'] < df['Open']),  
+        (df['Body_Pct'] <= 50)                               
     ]
     choices = ['Green Exciting', 'Red Exciting', 'Base']
     df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
     return df
 
-def scan_ultra_strict_zones(df, is_bullish):
-    if len(df) < 10: return None
+def scan_flip_zones(df, target_setup):
+    """
+    Hunts for original zones, waits for them to be broken by a closing candle, 
+    and alerts when the price pulls back into the newly created Flip Zone.
+    """
+    if len(df) < 30: return None
     
     df = analyze_gtf_candles(df)
-    
     current_price = df.iloc[-1]['Close']
     
-    search_df = df.tail(60) # Scan last 60 bars
+    # We must scan deeper into the past (120 bars) because old zones take time to break and flip
+    search_df = df.tail(120) 
     
-    for i in range(len(search_df) - 3, 0, -1):
-        leg_in = search_df.iloc[i-1]
+    for i in range(len(search_df) - 5):
+        leg_in = search_df.iloc[i]
         
-        # UPGRADE 1: Strict Min 1 to Max 2 Base Candles ONLY
-        for base_len in range(1, 3):
+        for base_len in range(1, 4): # Max 3 Base Candles
             if i + base_len >= len(search_df): continue
             
-            base_candles = search_df.iloc[i : i + base_len]
-            leg_out = search_df.iloc[i + base_len]
+            base_candles = search_df.iloc[i+1 : i+1+base_len]
+            leg_out = search_df.iloc[i+1+base_len]
             
             if not all(base_candles['GTF_Type'] == 'Base'): continue
             
-            # --- DEMAND LOGIC ---
-            if is_bullish and leg_out['GTF_Type'] == 'Green Exciting':
-                # UPGRADE 2: Leg-Out must close ABOVE the Leg-In's High
-                if leg_out['Close'] <= leg_in['High']: continue 
-                
-                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
-                distal = base_candles['Low'].min()
-                
-                # UPGRADE 3: Rally must be between 8% and 20%
-                rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
-                if rally_pct < 8.0 or rally_pct > 20.0: continue
-                
-                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else ('RBR' if leg_in['GTF_Type'] == 'Green Exciting' else None)
-                
-            # --- SUPPLY LOGIC ---
-            elif not is_bullish and leg_out['GTF_Type'] == 'Red Exciting':
-                # UPGRADE 2: Leg-Out must close BELOW the Leg-In's Low
-                if leg_out['Close'] >= leg_in['Low']: continue 
-                
-                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
-                distal = base_candles['High'].max()
-                
-                # UPGRADE 3: Drop (Rally downward) must be between 8% and 20%
-                rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
-                if rally_pct < 8.0 or rally_pct > 20.0: continue
-                
-                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else ('DBD' if leg_in['GTF_Type'] == 'Red Exciting' else None)
-                
-            else:
-                continue
-                
-            if not pattern: continue
-            
-            # --- VALIDATION (NOT BROKEN) ---
-            future_data = search_df.iloc[i + base_len + 1 : -1]
-            is_broken = False
-            
-            if not future_data.empty:
-                for _, past_candle in future_data.iterrows():
-                    if is_bullish and past_candle['Close'] < distal: is_broken = True
-                    if not is_bullish and past_candle['Close'] > distal: is_broken = True
+            # ==========================================================
+            # SETUP 1: DEMAND TURNED SUPPLY (Like your DLF Chart)
+            # ==========================================================
+            if "Demand turned Supply" in target_setup:
+                # Identify original Demand Zone
+                if leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High']:
+                    old_proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
+                    old_distal = base_candles['Low'].min()
+                    
+                    future_data = search_df.iloc[i+1+base_len+1 : -1]
+                    is_broken = False
+                    is_destroyed = False
+                    
+                    for _, past_candle in future_data.iterrows():
+                        if not is_broken:
+                            # Break Phase: Candle MUST close below the Demand Zone to flip it
+                            if past_candle['Close'] < old_distal:
+                                is_broken = True 
+                        else:
+                            # Destroy Phase: If it breaks above the old proximal, the new supply is dead
+                            if past_candle['Close'] > old_proximal:
+                                is_destroyed = True
+                                break
+                                
+                    if is_broken and not is_destroyed:
+                        # New Entry is at the Old Distal (Bottom of the broken box)
+                        new_entry = old_distal
+                        new_sl = old_proximal
                         
-            if is_broken: continue
-            
-            # --- UPGRADE 4: TRADING AT THE ZONE (ACTIVE PULLBACK) ---
-            trading_at_zone = False
-            
-            if is_bullish:
-                # Must be physically touching or inside the zone, NOT closed below distal
-                if current_price >= distal and current_price <= (proximal * 1.015): 
-                    trading_at_zone = True
-            else:
-                if current_price <= distal and current_price >= (proximal * 0.985):
-                    trading_at_zone = True
-            
-            if trading_at_zone:
-                return {
-                    "Zone Type": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
-                    "Base Form": f"{base_len} Candle(s)",
-                    "Momentum": f"{round(rally_pct, 2)}% Rally",
-                    "Live Price": round(current_price, 2),
-                    "Entry (Prox)": round(proximal, 2),
-                    "SL (Distal)": round(distal, 2),
-                    "Action": "🎯 AT ZONE"
-                }
+                        # Trigger if price pulls up into the bottom of the flipped zone
+                        if current_price >= (new_entry * 0.98) and current_price <= new_sl:
+                            return {
+                                "Zone Type": "🔴 Dem turned Supply",
+                                "History": "DZ Broken Down",
+                                "Live Price": round(current_price, 2),
+                                "New Entry": round(new_entry, 2),
+                                "New SL": round(new_sl, 2),
+                                "Action": "🎯 SELL THE FLIP"
+                            }
+                            
+            # ==========================================================
+            # SETUP 2: SUPPLY TURNED DEMAND 
+            # ==========================================================
+            elif "Supply turned Demand" in target_setup:
+                # Identify original Supply Zone
+                if leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low']:
+                    old_proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
+                    old_distal = base_candles['High'].max()
+                    
+                    future_data = search_df.iloc[i+1+base_len+1 : -1]
+                    is_broken = False
+                    is_destroyed = False
+                    
+                    for _, past_candle in future_data.iterrows():
+                        if not is_broken:
+                            # Break Phase: Candle MUST close above the Supply Zone to flip it
+                            if past_candle['Close'] > old_distal:
+                                is_broken = True 
+                        else:
+                            # Destroy Phase: If it breaks below the old proximal, the new demand is dead
+                            if past_candle['Close'] < old_proximal:
+                                is_destroyed = True
+                                break
+                                
+                    if is_broken and not is_destroyed:
+                        # New Entry is at the Old Distal (Top of the broken box)
+                        new_entry = old_distal
+                        new_sl = old_proximal
+                        
+                        # Trigger if price pulls down into the top of the flipped zone
+                        if current_price <= (new_entry * 1.02) and current_price >= new_sl:
+                            return {
+                                "Zone Type": "🟢 Sup turned Demand",
+                                "History": "SZ Broken Up",
+                                "Live Price": round(current_price, 2),
+                                "New Entry": round(new_entry, 2),
+                                "New SL": round(new_sl, 2),
+                                "Action": "🎯 BUY THE FLIP"
+                            }
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN 8-20% PULLBACK SCAN", type="primary"):
-    is_bull = "Demand" in direction
+if st.button("🔥 RUN FLIP ZONE SCANNER", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -226,31 +239,17 @@ if st.button("🔥 RUN 8-20% PULLBACK SCAN", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>TRACKING</span><h2>{total_stocks} ASSETS</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'SHORT' if 'Supply' in direction else 'LONG'}</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
+        progress_text.markdown("#### ⏳ Mapping Historical Zones & Tracking Violations...")
         
-        progress_text.markdown("#### ⏳ Fetching Historical Market Data...")
-        
-        # Setting API payloads for massive historical data requirements
-        if timeframe == "6mo":
-            interval_val = "1mo"
-            period_val = "max"
-        elif timeframe == "3mo":
-            interval_val = "3mo"
-            period_val = "max"
-        elif timeframe == "1mo":
-            interval_val = "1mo"
-            period_val = "max"
-        elif timeframe == "1wk":
-            interval_val = "1wk"
-            period_val = "5y"
-        else: # 1d
-            interval_val = "1d"
-            period_val = "2y"
+        # Deep historical pull to allow time for zones to form, break, and retest
+        interval_val = "1mo" if timeframe == "1mo" else ("1wk" if timeframe == "1wk" else "1d")
+        period_val = "max" if timeframe == "1mo" else ("5y" if timeframe == "1wk" else "2y")
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
@@ -262,14 +261,8 @@ if st.button("🔥 RUN 8-20% PULLBACK SCAN", type="primary"):
             
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
-                
                 if not df.empty:
-                    # Execute 6-Month Resampling if requested
-                    if timeframe == '6mo': 
-                        df = resample_to_6mo(df)
-                    
-                    setup = scan_ultra_strict_zones(df, is_bull)
-                    
+                    setup = scan_flip_zones(df, direction)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -281,16 +274,16 @@ if st.button("🔥 RUN 8-20% PULLBACK SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets trading perfectly at an 8-20% Institutional Zone.")
+            st.success(f"Successfully isolated {len(results)} assets actively testing a verified Flip Zone.")
             
-            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'Base Form', 'Momentum', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
+            final_df = pd.DataFrame(results)[['Asset', 'Zone Type', 'History', 'Live Price', 'New Entry', 'New SL', 'Action']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Zone Type'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Momentum'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['History'])\
               .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The strict 8% to 20% Momentum Rule filtered the noise. No stocks are currently trading at a verified zone.")
+            st.error("0 MATCHES. No assets are currently pulling back to retest a broken Flip Zone right now.")
