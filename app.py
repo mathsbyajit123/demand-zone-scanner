@@ -4,19 +4,20 @@ import pandas as pd
 import numpy as np
 import warnings
 import io, requests
+import time
 
 warnings.filterwarnings('ignore')
 
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="GTF Rated S&D Scanner", layout="wide")
+st.set_page_config(page_title="Apex Multi-EMA Scanner", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 36px; letter-spacing: -1px;
+        font-weight: 900; font-size: 38px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -38,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">GTF RATED ZONE TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Deep History Scan | Gap Theory | 7-Point Institutional Score</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">MULTI-EMA TACTICAL SCANNER</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Upward Slope Angle Filter | 200/20-50/44 EMA Tracking</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -48,24 +49,28 @@ with st.sidebar:
     st.markdown("### **COMMAND CENTER**")
     st.divider()
     
-    sector_options = ["F&O Stocks (~225)", "Nifty 50", "Nifty 500", "Nifty Smallcap 250"]
-    selected_sector = st.selectbox("Market Universe", sector_options, index=0)
+    sector_options = ["F&O Stocks (~242)", "Nifty 50", "Nifty 500", "Nifty Smallcap 250"]
+    selected_sector = st.selectbox("Market Universe", sector_options, index=2)
     
     tf_options = {
+        "15 Min": "15m",
+        "75 Min": "75m",
         "1 Day": "1d", 
-        "1 Week": "1wk",
-        "1 Month": "1mo",
-        "3 Month": "3mo",
-        "6 Month": "6mo"
+        "1 Week": "1wk"
     }
-    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=0)
+    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
     st.divider()
-    direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Fresh Pullbacks)", "🔴 Supply (Sell Fresh Pullbacks)"))
+    setup_options = [
+        "🟣 200 EMA Support (0% to +5%)",
+        "🔵 Between 20 & 50 EMA (20 > 50)",
+        "🟡 Near 44 EMA (± 1.5% Bounce)"
+    ]
+    target_setup = st.radio("Target Setup Architecture", setup_options)
 
 # ==========================================
-# 3. DATA ROUTING & RESAMPLING
+# 3. FIXED NSE DATA ROUTER
 # ==========================================
 @st.cache_data(ttl=3600)
 def get_index_tickers(sector_name):
@@ -98,218 +103,163 @@ def get_index_tickers(sector_name):
     ]
     if "F&O" in sector_name: return [f"{t}.NS" for t in fo_stocks_list]
     
-    csv_file = ""
-    if "500" in sector_name: csv_file = "ind_nifty500list.csv"
-    elif "250" in sector_name: csv_file = "ind_niftysmallcap250list.csv"
-    elif "50" in sector_name: csv_file = "ind_nifty50list.csv"
+    url = ""
+    if "500" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    elif "250" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
+    elif "50" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
     
     try:
-        response = requests.get(f"https://raw.githubusercontent.com/althk/zerobha/main/{csv_file}", timeout=10)
+        session = requests.Session()
+        session.headers.update(headers)
+        session.get("https://www.nseindia.com", timeout=10) 
+        time.sleep(1) 
+        response = session.get(url, timeout=10) 
+        
         if response.status_code == 200:
             df = pd.read_csv(io.StringIO(response.text))
             return [f"{s.strip()}.NS" for s in df['Symbol']]
         else:
-            raise Exception("File not found")
-    except:
+            return [f"{t}.NS" for t in fo_stocks_list]
+    except Exception as e:
         return [f"{t}.NS" for t in fo_stocks_list]
 
-def resample_custom_months(df, months):
-    rule = f'{months}ME'
-    return df.resample(rule).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+def resample_to_75m(df):
+    return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. GTF ENGINE & SCORING MATHEMATICS
+# 4. MULTI-EMA MATHEMATICAL ENGINE & SLOPE
 # ==========================================
-def analyze_gtf_candles(df):
-    df['Range'] = df['High'] - df['Low']
-    df['Body'] = abs(df['Close'] - df['Open'])
-    df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
-    
-    conditions = [
-        (df['Body_Pct'] > 50) & (df['Close'] > df['Open']),  
-        (df['Body_Pct'] > 50) & (df['Close'] < df['Open']),  
-        (df['Body_Pct'] <= 50)                               
-    ]
-    choices = ['Green Exciting', 'Red Exciting', 'Base']
-    df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
-    return df
-
-def calculate_gtf_score(base_len, rally_pct, is_gap):
-    # GTF Rule: 1-2 bases are superior. 3 bases is acceptable but lower probability.
-    base_score = 2 if base_len <= 2 else 1
-    
-    # GTF Rule: Massive momentum (>10%) or Gaps score maximum strength.
-    momentum_score = 2 if (is_gap or rally_pct >= 10.0) else 1
-    
-    # GTF Rule: The scanner inherently filters tested zones, so freshness is always maximum.
-    fresh_score = 3
-    
-    total = base_score + momentum_score + fresh_score
-    
-    if total == 7: return "⭐⭐⭐⭐⭐ (7/7)"
-    elif total == 6: return "⭐⭐⭐⭐ (6/7)"
-    else: return "⭐⭐⭐ (5/7)"
-
-def scan_fresh_gtf_zones(df, is_bullish):
-    if len(df) < 20: return None
-    
-    df = analyze_gtf_candles(df)
-    
-    # Extract deep history (up to ~1 year of daily bars)
-    search_df = df.tail(300) 
-    last_idx = len(search_df) - 1
-    today_candle = search_df.iloc[last_idx]
-    live_price = today_candle['Close']
-    
-    for i in range(1, last_idx - 3):
-        leg_in = search_df.iloc[i-1]
+def calculate_ema_angle(ema_series):
+    """Calculates the upward angle of the EMA using 3-period Arctangent Math."""
+    try:
+        y1 = ema_series.iloc[-4] # 3 periods ago
+        y2 = ema_series.iloc[-1] # Current
         
-        # Allows up to 3 Base Candles now
-        for base_len in range(1, 4):
-            leg_out_idx = i + base_len
-            if leg_out_idx >= last_idx: continue # Zone must have formed before today
-            
-            base_candles = search_df.iloc[i : leg_out_idx]
-            leg_out = search_df.iloc[leg_out_idx]
-            
-            if not all(base_candles['GTF_Type'] == 'Base'): continue
-            
-            pattern = None
-            is_gap = False
-            
-            # --- DEMAND & GAP DEMAND LOGIC ---
-            if is_bullish:
-                is_standard_leg = (leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High'])
-                # Gap Up logic: Opened above the highest point of the base and formed a green/neutral body
-                is_gap_up = (leg_out['Open'] > base_candles['High'].max()) and (leg_out['Close'] >= leg_out['Open'])
-                
-                if is_standard_leg or is_gap_up:
-                    proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
-                    distal = base_candles['Low'].min()
-                    rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
-                    
-                    if is_gap_up:
-                        pattern = 'DBR (GAP)' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR (GAP)'
-                        is_gap = True
-                    else:
-                        pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR'
-                        
-                    # Expanded Momentum Rule: 5% to 30% (Catch large cap moves)
-                    if not is_gap and (rally_pct < 5.0 or rally_pct > 30.0): continue
+        # Percentage Rate of Change
+        roc_pct = ((y2 - y1) / y1) * 100 
+        
+        # Convert ROC to degrees (Scaling factor applied to simulate chart visuals)
+        angle = np.degrees(np.arctan(roc_pct * 5)) 
+        return round(angle, 1)
+    except:
+        return 0
 
-            # --- SUPPLY & GAP SUPPLY LOGIC ---
-            elif not is_bullish:
-                is_standard_leg = (leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low'])
-                # Gap Down logic: Opened below the lowest point of the base and formed a red/neutral body
-                is_gap_down = (leg_out['Open'] < base_candles['Low'].min()) and (leg_out['Close'] <= leg_out['Open'])
-                
-                if is_standard_leg or is_gap_down:
-                    proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
-                    distal = base_candles['High'].max()
-                    rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
-                    
-                    if is_gap_down:
-                        pattern = 'RBD (GAP)' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD (GAP)'
-                        is_gap = True
-                    else:
-                        pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD'
-                        
-                    if not is_gap and (rally_pct < 5.0 or rally_pct > 30.0): continue
-                
-            if not pattern: continue
+def scan_emas(df, target_setup):
+    if len(df) < 205: return None 
+    
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_44'] = df['Close'].ewm(span=44, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    
+    c = df.iloc[-1]
+    live_price = c['Close']
+    
+    # SETUP 1: 200 EMA Support
+    if "200 EMA" in target_setup:
+        angle = calculate_ema_angle(df['EMA_200'])
+        if angle <= 0: return None # Strict Upward Slope Filter
+        
+        if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
+            return {
+                "Setup Filter": "🟣 200 EMA Support",
+                "Live Price": round(live_price, 2),
+                "Key Level": f"EMA 200: {round(c['EMA_200'], 2)}",
+                "Distance": f"{round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)}% Away",
+                "EMA Angle": f"↗️ {angle}°",
+                "Action": "🎯 BUY THE DIP"
+            }
             
-            # --- "FRESHNESS" & BROKEN VALIDATION ---
-            # Look at all days between the Leg-Out and Yesterday
-            future_data = search_df.iloc[leg_out_idx + 1 : last_idx]
-            is_tested = False
-            is_broken = False
-            
-            if not future_data.empty:
-                for _, past_candle in future_data.iterrows():
-                    if is_bullish:
-                        if past_candle['Low'] <= proximal: is_tested = True
-                        if past_candle['Close'] < distal: is_broken = True
-                    else:
-                        if past_candle['High'] >= proximal: is_tested = True
-                        if past_candle['Close'] > distal: is_broken = True
-                        
-            if is_broken or is_tested: continue
-            
-            # --- DYNAMIC ACTIVE TOUCH (TODAY'S ACTION) ---
-            trading_at_zone = False
-            
-            if is_bullish:
-                # If TODAY'S LOW pierced the proximal line (or came within 2.5% of it) AND hasn't hit stop loss
-                if today_candle['Low'] <= (proximal * 1.025) and live_price >= distal: 
-                    trading_at_zone = True
-            else:
-                # If TODAY'S HIGH pierced the proximal line (or came within 2.5% of it) AND hasn't hit stop loss
-                if today_candle['High'] >= (proximal * 0.975) and live_price <= distal:
-                    trading_at_zone = True
-            
-            if trading_at_zone:
-                gtf_rating = calculate_gtf_score(base_len, rally_pct, is_gap)
-                
+    # SETUP 2: Between 20 & 50 EMA Trap
+    elif "Between 20 & 50" in target_setup:
+        angle = calculate_ema_angle(df['EMA_20'])
+        if angle <= 0: return None # Strict Upward Slope Filter
+        
+        if c['EMA_20'] > c['EMA_50']:
+            if c['EMA_50'] <= live_price <= c['EMA_20']:
                 return {
-                    "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
-                    "Structure": f"{base_len} Base",
-                    "GTF Score": gtf_rating,
+                    "Setup Filter": "🔵 20-50 EMA Trap",
                     "Live Price": round(live_price, 2),
-                    "Entry (Prox)": round(proximal, 2),
-                    "SL (Distal)": round(distal, 2),
-                    "Action": "🎯 FRESH TAP TODAY"
+                    "Key Level": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
+                    "Distance": "Sandwiched",
+                    "EMA Angle": f"↗️ {angle}°",
+                    "Action": "🎯 ACCUMULATE"
                 }
+
+    # SETUP 3: Near 44 EMA Bounce
+    elif "Near 44 EMA" in target_setup:
+        angle = calculate_ema_angle(df['EMA_44'])
+        if angle <= 0: return None # Strict Upward Slope Filter
+        
+        lower_band = c['EMA_44'] * 0.985
+        upper_band = c['EMA_44'] * 1.015
+        
+        if lower_band <= live_price <= upper_band:
+            return {
+                "Setup Filter": "🟡 44 EMA Bounce",
+                "Live Price": round(live_price, 2),
+                "Key Level": f"EMA 44: {round(c['EMA_44'], 2)}",
+                "Distance": f"{round(((live_price - c['EMA_44']) / c['EMA_44']) * 100, 2)}% Away",
+                "EMA Angle": f"↗️ {angle}°",
+                "Action": "🎯 WATCH REVERSAL"
+            }
+            
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN GTF SCORED SCAN", type="primary"):
-    is_bull = "Demand" in direction
+if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
     if ticker_list:
         col1, col2, col3 = st.columns([1, 1, 1])
-        with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
+        with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{total_stocks} ASSETS</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>EMA SLOPE</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Retrieving 1 Year Deep History & Scanning...")
+        progress_text.markdown("#### ⏳ Fetching Deep History & Calculating Angles...")
         
-        if timeframe in ["6mo", "3mo", "1mo"]:
-            interval_val = "1mo"
-            period_val = "max"
-        elif timeframe == "1wk":
+        if timeframe == "1wk":
             interval_val = "1wk"
-            period_val = "5y"
-        else: # 1d
+            period_val = "5y" 
+        elif timeframe == "1d":
             interval_val = "1d"
-            period_val = "3y" # Deepened to catch older, massive daily zones
+            period_val = "2y" 
+        elif timeframe == "75m":
+            interval_val = "15m"
+            period_val = "60d"
+        else: # 15m
+            interval_val = "15m"
+            period_val = "60d"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Analyzing & Grading {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Analyzing Vectors {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 
                 if not df.empty:
-                    if timeframe == '6mo': 
-                        df = resample_custom_months(df, 6)
-                    elif timeframe == '3mo':
-                        df = resample_custom_months(df, 3)
-                        
-                    setup = scan_fresh_gtf_zones(df, is_bull)
+                    if timeframe == '75m': df = resample_to_75m(df)
+                    
+                    setup = scan_emas(df, target_setup)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -322,17 +272,21 @@ if st.button("🔥 RUN GTF SCORED SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets tapping a VERIFIED FRESH GTF Zone today.")
+            st.success(f"Successfully isolated {len(results)} assets with an UPWARD SLOPING EMA matching criteria.")
             
-            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Structure', 'GTF Score', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
-            final_df = final_df.sort_values(by="GTF Score", ascending=False)
+            final_df = pd.DataFrame(results)[['Asset', 'Setup Filter', 'Live Price', 'Key Level', 'Distance', 'EMA Angle', 'Action']]
+            
+            color = '#00F2FE'
+            if '200' in target_setup: color = '#B19CD9'
+            elif '20-50' in target_setup: color = '#4FACFE'
+            elif '44' in target_setup: color = '#F6D365'
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
-            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['GTF Setup'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800; font-size: 16px;', subset=['GTF Score'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
+            }).map(lambda v: f'color: {color}; font-weight: 800;', subset=['Setup Filter'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['EMA Angle'])\
+              .map(lambda v: 'color: #00FF00; font-weight: 800;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The GTF algorithm scanned 1 year of history, but no stocks touched an untested zone today.")
+            st.error(f"0 MATCHES. No assets currently meet the exact mathematical setup AND possess a positive upward EMA slope.")
