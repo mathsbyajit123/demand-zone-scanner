@@ -16,7 +16,7 @@ st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 38px; letter-spacing: -1px;
+        font-weight: 900; font-size: 36px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -39,7 +39,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="gradient-text">GTF RATED ZONE TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Scans Untested Zones & Calculates Out-of-7 Institutional Score</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Deep History Scan | Gap Theory | 7-Point Institutional Score</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -134,76 +134,93 @@ def analyze_gtf_candles(df):
     df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
     return df
 
-def calculate_gtf_score(base_len, rally_pct):
-    # Base Candles Score (Max 2)
-    base_score = 2 if base_len == 1 else 1
+def calculate_gtf_score(base_len, rally_pct, is_gap):
+    # GTF Rule: 1-2 bases are superior. 3 bases is acceptable but lower probability.
+    base_score = 2 if base_len <= 2 else 1
     
-    # Momentum Score (Max 2)
-    momentum_score = 2 if rally_pct >= 15.0 else 1
+    # GTF Rule: Massive momentum (>10%) or Gaps score maximum strength.
+    momentum_score = 2 if (is_gap or rally_pct >= 10.0) else 1
     
-    # Freshness Score (Always 3 because tested zones are discarded)
+    # GTF Rule: The scanner inherently filters tested zones, so freshness is always maximum.
     fresh_score = 3
     
     total = base_score + momentum_score + fresh_score
     
-    if total == 7:
-        return "⭐⭐⭐⭐⭐ (7/7)"
-    elif total == 6:
-        return "⭐⭐⭐⭐ (6/7)"
-    else:
-        return "⭐⭐⭐ (5/7)"
+    if total == 7: return "⭐⭐⭐⭐⭐ (7/7)"
+    elif total == 6: return "⭐⭐⭐⭐ (6/7)"
+    else: return "⭐⭐⭐ (5/7)"
 
 def scan_fresh_gtf_zones(df, is_bullish):
-    if len(df) < 15: return None
+    if len(df) < 20: return None
     
     df = analyze_gtf_candles(df)
-    current_candle = df.iloc[-1]
-    current_price = current_candle['Close']
     
-    search_df = df.tail(60) 
+    # Extract deep history (up to ~1 year of daily bars)
+    search_df = df.tail(300) 
+    last_idx = len(search_df) - 1
+    today_candle = search_df.iloc[last_idx]
+    live_price = today_candle['Close']
     
-    for i in range(len(search_df) - 3, 0, -1):
+    for i in range(1, last_idx - 3):
         leg_in = search_df.iloc[i-1]
         
-        for base_len in range(1, 3):
-            if i + base_len >= len(search_df): continue
+        # Allows up to 3 Base Candles now
+        for base_len in range(1, 4):
+            leg_out_idx = i + base_len
+            if leg_out_idx >= last_idx: continue # Zone must have formed before today
             
-            base_candles = search_df.iloc[i : i + base_len]
-            leg_out = search_df.iloc[i + base_len]
+            base_candles = search_df.iloc[i : leg_out_idx]
+            leg_out = search_df.iloc[leg_out_idx]
             
             if not all(base_candles['GTF_Type'] == 'Base'): continue
             
-            # --- DEMAND LOGIC ---
-            if is_bullish and leg_out['GTF_Type'] == 'Green Exciting':
-                if leg_out['Close'] <= leg_in['High']: continue 
+            pattern = None
+            is_gap = False
+            
+            # --- DEMAND & GAP DEMAND LOGIC ---
+            if is_bullish:
+                is_standard_leg = (leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High'])
+                # Gap Up logic: Opened above the highest point of the base and formed a green/neutral body
+                is_gap_up = (leg_out['Open'] > base_candles['High'].max()) and (leg_out['Close'] >= leg_out['Open'])
                 
-                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
-                distal = base_candles['Low'].min()
+                if is_standard_leg or is_gap_up:
+                    proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
+                    distal = base_candles['Low'].min()
+                    rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
+                    
+                    if is_gap_up:
+                        pattern = 'DBR (GAP)' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR (GAP)'
+                        is_gap = True
+                    else:
+                        pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR'
+                        
+                    # Expanded Momentum Rule: 5% to 30% (Catch large cap moves)
+                    if not is_gap and (rally_pct < 5.0 or rally_pct > 30.0): continue
+
+            # --- SUPPLY & GAP SUPPLY LOGIC ---
+            elif not is_bullish:
+                is_standard_leg = (leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low'])
+                # Gap Down logic: Opened below the lowest point of the base and formed a red/neutral body
+                is_gap_down = (leg_out['Open'] < base_candles['Low'].min()) and (leg_out['Close'] <= leg_out['Open'])
                 
-                rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
-                if rally_pct < 8.0 or rally_pct > 20.0: continue
-                
-                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else ('RBR' if leg_in['GTF_Type'] == 'Green Exciting' else None)
-                
-            # --- SUPPLY LOGIC ---
-            elif not is_bullish and leg_out['GTF_Type'] == 'Red Exciting':
-                if leg_out['Close'] >= leg_in['Low']: continue 
-                
-                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
-                distal = base_candles['High'].max()
-                
-                rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
-                if rally_pct < 8.0 or rally_pct > 20.0: continue
-                
-                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else ('DBD' if leg_in['GTF_Type'] == 'Red Exciting' else None)
-                
-            else:
-                continue
+                if is_standard_leg or is_gap_down:
+                    proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
+                    distal = base_candles['High'].max()
+                    rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
+                    
+                    if is_gap_down:
+                        pattern = 'RBD (GAP)' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD (GAP)'
+                        is_gap = True
+                    else:
+                        pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD'
+                        
+                    if not is_gap and (rally_pct < 5.0 or rally_pct > 30.0): continue
                 
             if not pattern: continue
             
             # --- "FRESHNESS" & BROKEN VALIDATION ---
-            future_data = search_df.iloc[i + base_len + 1 : -1]
+            # Look at all days between the Leg-Out and Yesterday
+            future_data = search_df.iloc[leg_out_idx + 1 : last_idx]
             is_tested = False
             is_broken = False
             
@@ -218,27 +235,29 @@ def scan_fresh_gtf_zones(df, is_bullish):
                         
             if is_broken or is_tested: continue
             
-            # --- ACTIVE LIVE RETEST (MEETING FRESHLY) ---
+            # --- DYNAMIC ACTIVE TOUCH (TODAY'S ACTION) ---
             trading_at_zone = False
             
             if is_bullish:
-                if current_price <= (proximal * 1.02) and current_candle['Close'] >= distal: 
+                # If TODAY'S LOW pierced the proximal line (or came within 2.5% of it) AND hasn't hit stop loss
+                if today_candle['Low'] <= (proximal * 1.025) and live_price >= distal: 
                     trading_at_zone = True
             else:
-                if current_price >= (proximal * 0.98) and current_candle['Close'] <= distal:
+                # If TODAY'S HIGH pierced the proximal line (or came within 2.5% of it) AND hasn't hit stop loss
+                if today_candle['High'] >= (proximal * 0.975) and live_price <= distal:
                     trading_at_zone = True
             
             if trading_at_zone:
-                gtf_rating = calculate_gtf_score(base_len, rally_pct)
+                gtf_rating = calculate_gtf_score(base_len, rally_pct, is_gap)
                 
                 return {
                     "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
                     "Structure": f"{base_len} Base",
                     "GTF Score": gtf_rating,
-                    "Live Price": round(current_price, 2),
+                    "Live Price": round(live_price, 2),
                     "Entry (Prox)": round(proximal, 2),
                     "SL (Distal)": round(distal, 2),
-                    "Status": "🔥 1st TIME TEST"
+                    "Action": "🎯 FRESH TAP TODAY"
                 }
     return None
 
@@ -261,7 +280,7 @@ if st.button("🔥 RUN GTF SCORED SCAN", type="primary"):
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching Historical Institutional Data & Calculating Scores...")
+        progress_text.markdown("#### ⏳ Retrieving 1 Year Deep History & Scanning...")
         
         if timeframe in ["6mo", "3mo", "1mo"]:
             interval_val = "1mo"
@@ -271,7 +290,7 @@ if st.button("🔥 RUN GTF SCORED SCAN", type="primary"):
             period_val = "5y"
         else: # 1d
             interval_val = "1d"
-            period_val = "2y"
+            period_val = "3y" # Deepened to catch older, massive daily zones
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
@@ -303,18 +322,17 @@ if st.button("🔥 RUN GTF SCORED SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets testing a VERIFIED FRESH GTF Zone.")
+            st.success(f"Successfully isolated {len(results)} assets tapping a VERIFIED FRESH GTF Zone today.")
             
-            # Sorted by best score first
-            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Structure', 'GTF Score', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Status']]
+            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Structure', 'GTF Score', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
             final_df = final_df.sort_values(by="GTF Score", ascending=False)
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['GTF Setup'])\
               .map(lambda v: 'color: #F6D365; font-weight: 800; font-size: 16px;', subset=['GTF Score'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Status'])
+              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The GTF rules have filtered all noise. No fresh, untested zones are currently being tapped in this sector on this timeframe.")
+            st.error("0 MATCHES. The GTF algorithm scanned 1 year of history, but no stocks touched an untested zone today.")
