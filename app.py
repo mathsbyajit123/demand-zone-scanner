@@ -40,7 +40,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="gradient-text">MULTI-EMA TACTICAL SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Upward Slope Angle Filter | 200/20-50/44 EMA Tracking</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Strict Macro Uptrend Filters | Upward Slope Angles | Sideways Market Rejection</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -56,7 +56,10 @@ with st.sidebar:
         "15 Min": "15m",
         "75 Min": "75m",
         "1 Day": "1d", 
-        "1 Week": "1wk"
+        "1 Week": "1wk",
+        "1 Month": "1mo",
+        "3 Month": "3mo",
+        "6 Month": "6mo"
     }
     tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
@@ -132,19 +135,19 @@ def get_index_tickers(sector_name):
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
+def resample_custom_months(df, months):
+    rule = f'{months}ME'
+    return df.resample(rule).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+
 # ==========================================
-# 4. MULTI-EMA MATHEMATICAL ENGINE & SLOPE
+# 4. MULTI-EMA MATHEMATICAL ENGINE
 # ==========================================
 def calculate_ema_angle(ema_series):
     """Calculates the upward angle of the EMA using 3-period Arctangent Math."""
     try:
-        y1 = ema_series.iloc[-4] # 3 periods ago
-        y2 = ema_series.iloc[-1] # Current
-        
-        # Percentage Rate of Change
+        y1 = ema_series.iloc[-4] 
+        y2 = ema_series.iloc[-1] 
         roc_pct = ((y2 - y1) / y1) * 100 
-        
-        # Convert ROC to degrees (Scaling factor applied to simulate chart visuals)
         angle = np.degrees(np.arctan(roc_pct * 5)) 
         return round(angle, 1)
     except:
@@ -163,6 +166,9 @@ def scan_emas(df, target_setup):
     
     # SETUP 1: 200 EMA Support
     if "200 EMA" in target_setup:
+        # MACRO TREND FILTER: 50 EMA must be above 200 EMA (Rejects Downtrends/Sideways)
+        if c['EMA_50'] <= c['EMA_200']: return None
+        
         angle = calculate_ema_angle(df['EMA_200'])
         if angle <= 0: return None # Strict Upward Slope Filter
         
@@ -178,24 +184,29 @@ def scan_emas(df, target_setup):
             
     # SETUP 2: Between 20 & 50 EMA Trap
     elif "Between 20 & 50" in target_setup:
-        angle = calculate_ema_angle(df['EMA_20'])
-        if angle <= 0: return None # Strict Upward Slope Filter
+        # MACRO TREND FILTER: Perfect Uptrend Fan (20 > 50 > 200)
+        if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
         
-        if c['EMA_20'] > c['EMA_50']:
-            if c['EMA_50'] <= live_price <= c['EMA_20']:
-                return {
-                    "Setup Filter": "🔵 20-50 EMA Trap",
-                    "Live Price": round(live_price, 2),
-                    "Key Level": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
-                    "Distance": "Sandwiched",
-                    "EMA Angle": f"↗️ {angle}°",
-                    "Action": "🎯 ACCUMULATE"
-                }
+        angle = calculate_ema_angle(df['EMA_50'])
+        if angle <= 0: return None 
+        
+        if c['EMA_50'] <= live_price <= c['EMA_20']:
+            return {
+                "Setup Filter": "🔵 20-50 EMA Trap",
+                "Live Price": round(live_price, 2),
+                "Key Level": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
+                "Distance": "Sandwiched",
+                "EMA Angle": f"↗️ {angle}°",
+                "Action": "🎯 ACCUMULATE"
+            }
 
     # SETUP 3: Near 44 EMA Bounce
     elif "Near 44 EMA" in target_setup:
+        # MACRO TREND FILTER: 44 EMA must be above 200 EMA (Rejects Downtrends/Sideways)
+        if c['EMA_44'] <= c['EMA_200']: return None
+        
         angle = calculate_ema_angle(df['EMA_44'])
-        if angle <= 0: return None # Strict Upward Slope Filter
+        if angle <= 0: return None 
         
         lower_band = c['EMA_44'] * 0.985
         upper_band = c['EMA_44'] * 1.015
@@ -215,7 +226,7 @@ def scan_emas(df, target_setup):
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
+if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -223,21 +234,24 @@ if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{total_stocks} ASSETS</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>EMA SLOPE</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>TREND PULLBACK</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching Deep History & Calculating Angles...")
+        progress_text.markdown("#### ⏳ Fetching Deep History & Validating Macro Uptrends...")
         
-        if timeframe == "1wk":
+        if timeframe in ["6mo", "3mo", "1mo"]:
+            interval_val = "1mo"
+            period_val = "max"
+        elif timeframe == "1wk":
             interval_val = "1wk"
-            period_val = "5y" 
+            period_val = "10y" 
         elif timeframe == "1d":
             interval_val = "1d"
-            period_val = "2y" 
+            period_val = "3y" 
         elif timeframe == "75m":
             interval_val = "15m"
             period_val = "60d"
@@ -250,14 +264,16 @@ if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Analyzing Vectors {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Validating Trend for {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 
                 if not df.empty:
-                    if timeframe == '75m': df = resample_to_75m(df)
+                    if timeframe == '6mo': df = resample_custom_months(df, 6)
+                    elif timeframe == '3mo': df = resample_custom_months(df, 3)
+                    elif timeframe == '75m': df = resample_to_75m(df)
                     
                     setup = scan_emas(df, target_setup)
                     
@@ -272,7 +288,7 @@ if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets with an UPWARD SLOPING EMA matching criteria.")
+            st.success(f"Successfully isolated {len(results)} assets in a STRICT MACRO UPTREND pulling back to targets.")
             
             final_df = pd.DataFrame(results)[['Asset', 'Setup Filter', 'Live Price', 'Key Level', 'Distance', 'EMA Angle', 'Action']]
             
@@ -289,4 +305,4 @@ if st.button("🔥 RUN EMA ANGLE SCANNER", type="primary"):
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error(f"0 MATCHES. No assets currently meet the exact mathematical setup AND possess a positive upward EMA slope.")
+            st.error(f"0 MATCHES. No assets currently meet the macro uptrend criteria AND possess a positive upward EMA slope pulling back to the zone.")
