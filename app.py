@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="GTF Rated S&D + GAP Scanner", layout="wide")
+st.set_page_config(page_title="GTF Rated S&D Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -38,8 +38,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">GTF RATED ZONE & GAP TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Scans Untested Zones | Gap Theory Integration | 7-Point Institutional Score</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">GTF RATED ZONE TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Scans Untested Zones & Calculates Out-of-7 Institutional Score</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -134,24 +134,24 @@ def analyze_gtf_candles(df):
     df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
     return df
 
-def calculate_gtf_score(base_len, rally_pct, is_gap):
+def calculate_gtf_score(base_len, rally_pct):
     # Base Candles Score (Max 2)
     base_score = 2 if base_len == 1 else 1
     
-    # Momentum Score (Max 2). Gaps automatically get max points.
-    if is_gap or rally_pct >= 15.0:
-        momentum_score = 2
-    else:
-        momentum_score = 1
+    # Momentum Score (Max 2)
+    momentum_score = 2 if rally_pct >= 15.0 else 1
     
-    # Freshness Score (Always 3 because tested zones are filtered out)
+    # Freshness Score (Always 3 because tested zones are discarded)
     fresh_score = 3
     
     total = base_score + momentum_score + fresh_score
     
-    if total == 7: return "⭐⭐⭐⭐⭐ (7/7)"
-    elif total == 6: return "⭐⭐⭐⭐ (6/7)"
-    else: return "⭐⭐⭐ (5/7)"
+    if total == 7:
+        return "⭐⭐⭐⭐⭐ (7/7)"
+    elif total == 6:
+        return "⭐⭐⭐⭐ (6/7)"
+    else:
+        return "⭐⭐⭐ (5/7)"
 
 def scan_fresh_gtf_zones(df, is_bullish):
     if len(df) < 15: return None
@@ -173,45 +173,32 @@ def scan_fresh_gtf_zones(df, is_bullish):
             
             if not all(base_candles['GTF_Type'] == 'Base'): continue
             
-            pattern = None
-            is_gap = False
-            
-            # --- DEMAND & GAP DEMAND LOGIC ---
-            if is_bullish:
-                is_standard_leg = (leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High'])
-                is_gap_up = (leg_out['Open'] > base_candles['High'].max())
+            # --- DEMAND LOGIC ---
+            if is_bullish and leg_out['GTF_Type'] == 'Green Exciting':
+                if leg_out['Close'] <= leg_in['High']: continue 
                 
-                if is_standard_leg or is_gap_up:
-                    proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
-                    distal = base_candles['Low'].min()
-                    rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
-                    
-                    if is_gap_up:
-                        pattern = 'DBR (GAP)' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR (GAP)'
-                        is_gap = True
-                    else:
-                        pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR'
-                        
-                    # Standard momentum rule, but skipped if it's a gap (gaps are always valid)
-                    if not is_gap and (rally_pct < 8.0 or rally_pct > 20.0): continue
-
-            # --- SUPPLY & GAP SUPPLY LOGIC ---
-            elif not is_bullish:
-                is_standard_leg = (leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low'])
-                is_gap_down = (leg_out['Open'] < base_candles['Low'].min())
+                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
+                distal = base_candles['Low'].min()
                 
-                if is_standard_leg or is_gap_down:
-                    proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
-                    distal = base_candles['High'].max()
-                    rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
-                    
-                    if is_gap_down:
-                        pattern = 'RBD (GAP)' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD (GAP)'
-                        is_gap = True
-                    else:
-                        pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD'
-                        
-                    if not is_gap and (rally_pct < 8.0 or rally_pct > 20.0): continue
+                rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
+                if rally_pct < 8.0 or rally_pct > 20.0: continue
+                
+                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else ('RBR' if leg_in['GTF_Type'] == 'Green Exciting' else None)
+                
+            # --- SUPPLY LOGIC ---
+            elif not is_bullish and leg_out['GTF_Type'] == 'Red Exciting':
+                if leg_out['Close'] >= leg_in['Low']: continue 
+                
+                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
+                distal = base_candles['High'].max()
+                
+                rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
+                if rally_pct < 8.0 or rally_pct > 20.0: continue
+                
+                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else ('DBD' if leg_in['GTF_Type'] == 'Red Exciting' else None)
+                
+            else:
+                continue
                 
             if not pattern: continue
             
@@ -231,7 +218,7 @@ def scan_fresh_gtf_zones(df, is_bullish):
                         
             if is_broken or is_tested: continue
             
-            # --- ACTIVE LIVE RETEST ---
+            # --- ACTIVE LIVE RETEST (MEETING FRESHLY) ---
             trading_at_zone = False
             
             if is_bullish:
@@ -242,7 +229,7 @@ def scan_fresh_gtf_zones(df, is_bullish):
                     trading_at_zone = True
             
             if trading_at_zone:
-                gtf_rating = calculate_gtf_score(base_len, rally_pct, is_gap)
+                gtf_rating = calculate_gtf_score(base_len, rally_pct)
                 
                 return {
                     "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
