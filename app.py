@@ -11,13 +11,13 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Apex Hybrid GTF Scanner", layout="wide")
+st.set_page_config(page_title="Pure GTF Zone Scanner", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 36px; letter-spacing: -1px;
+        font-weight: 900; font-size: 38px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">HYBRID S&D + 50 EMA TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">GTF Fresh Zones Filtered by 50 EMA Macro Trend & Slope Angles</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">PURE GTF ZONE TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">100% Price Action | Fresh Untested Zones Only | No EMA Filters</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -50,20 +50,22 @@ with st.sidebar:
     st.divider()
     
     sector_options = ["F&O Stocks (~242)", "Nifty 50", "Nifty 500", "Nifty Smallcap 250"]
-    selected_sector = st.selectbox("Market Universe", sector_options, index=2)
+    selected_sector = st.selectbox("Market Universe", sector_options, index=0)
     
     tf_options = {
+        "15 Min": "15m",
+        "75 Min": "75m",
         "1 Day": "1d", 
         "1 Week": "1wk",
         "1 Month": "1mo",
         "3 Month": "3mo",
         "6 Month": "6mo"
     }
-    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=0)
+    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
     st.divider()
-    direction = st.radio("Target Zone Vector", ("🟢 Demand (Uptrend Pullbacks)", "🔴 Supply (Downtrend Pullbacks)"))
+    direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Fresh Pullbacks)", "🔴 Supply (Sell Fresh Pullbacks)"))
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -125,23 +127,16 @@ def get_index_tickers(sector_name):
     except:
         return [f"{t}.NS" for t in fo_stocks_list]
 
+def resample_to_75m(df):
+    return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+
 def resample_custom_months(df, months):
     rule = f'{months}ME'
     return df.resample(rule).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. HYBRID GTF ENGINE & 50 EMA FILTER
+# 4. PURE GTF ENGINE (NO EMAs)
 # ==========================================
-def calculate_ema_angle(ema_series):
-    try:
-        y1 = ema_series.iloc[-4] 
-        y2 = ema_series.iloc[-1] 
-        roc_pct = ((y2 - y1) / y1) * 100 
-        angle = np.degrees(np.arctan(roc_pct * 5)) 
-        return round(angle, 1)
-    except:
-        return 0
-
 def analyze_gtf_candles(df):
     df['Range'] = df['High'] - df['Low']
     df['Body'] = abs(df['Close'] - df['Open'])
@@ -157,44 +152,35 @@ def analyze_gtf_candles(df):
     return df
 
 def calculate_gtf_score(base_len, rally_pct, is_gap):
+    # GTF Rules: Max 2 points for base structure, Max 2 points for momentum, Always 3 for Freshness
     base_score = 2 if base_len <= 2 else 1
     momentum_score = 2 if (is_gap or rally_pct >= 10.0) else 1
     fresh_score = 3
+    
     total = base_score + momentum_score + fresh_score
     
     if total == 7: return "⭐⭐⭐⭐⭐ (7/7)"
     elif total == 6: return "⭐⭐⭐⭐ (6/7)"
     else: return "⭐⭐⭐ (5/7)"
 
-def scan_hybrid_gtf_zones(df, is_bullish):
-    if len(df) < 55: return None 
-    
-    # Calculate Macro Trend 50 EMA
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+def scan_pure_gtf_zones(df, is_bullish):
+    if len(df) < 15: return None
     
     df = analyze_gtf_candles(df)
     
+    # Extract deep history (up to ~1 year of daily bars)
     search_df = df.tail(300) 
     last_idx = len(search_df) - 1
     today_candle = search_df.iloc[last_idx]
     live_price = today_candle['Close']
-    current_50_ema = today_candle['EMA_50']
-    
-    # --- MACRO TREND HYBRID FILTER (50 EMA) ---
-    angle = calculate_ema_angle(df['EMA_50'])
-    if is_bullish:
-        # STRICT RULE: Price must be above 50 EMA and slope must be positive
-        if live_price < current_50_ema or angle <= 0: return None
-    else:
-        # STRICT RULE: Price must be below 50 EMA and slope must be negative
-        if live_price > current_50_ema or angle >= 0: return None
     
     for i in range(1, last_idx - 3):
         leg_in = search_df.iloc[i-1]
         
+        # Allows up to 3 Base Candles
         for base_len in range(1, 4):
             leg_out_idx = i + base_len
-            if leg_out_idx >= last_idx: continue
+            if leg_out_idx >= last_idx: continue 
             
             base_candles = search_df.iloc[i : leg_out_idx]
             leg_out = search_df.iloc[leg_out_idx]
@@ -204,6 +190,7 @@ def scan_hybrid_gtf_zones(df, is_bullish):
             pattern = None
             is_gap = False
             
+            # --- DEMAND & GAP DEMAND LOGIC ---
             if is_bullish:
                 is_standard_leg = (leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High'])
                 is_gap_up = (leg_out['Open'] > base_candles['High'].max()) and (leg_out['Close'] >= leg_out['Open'])
@@ -211,11 +198,6 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                 if is_standard_leg or is_gap_up:
                     proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
                     distal = base_candles['Low'].min()
-                    
-                    # Trend Adherence: The Demand Zone itself must be formed ABOVE the 50 EMA
-                    zone_creation_ema = search_df.iloc[leg_out_idx]['EMA_50']
-                    if proximal < zone_creation_ema: continue
-                    
                     rally_pct = ((leg_out['Close'] - proximal) / proximal) * 100
                     
                     if is_gap_up:
@@ -226,6 +208,7 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                         
                     if not is_gap and (rally_pct < 5.0 or rally_pct > 30.0): continue
 
+            # --- SUPPLY & GAP SUPPLY LOGIC ---
             elif not is_bullish:
                 is_standard_leg = (leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low'])
                 is_gap_down = (leg_out['Open'] < base_candles['Low'].min()) and (leg_out['Close'] <= leg_out['Open'])
@@ -233,11 +216,6 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                 if is_standard_leg or is_gap_down:
                     proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
                     distal = base_candles['High'].max()
-                    
-                    # Trend Adherence: The Supply Zone itself must be formed BELOW the 50 EMA
-                    zone_creation_ema = search_df.iloc[leg_out_idx]['EMA_50']
-                    if proximal > zone_creation_ema: continue
-                    
                     rally_pct = ((proximal - leg_out['Close']) / proximal) * 100
                     
                     if is_gap_down:
@@ -250,7 +228,8 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                 
             if not pattern: continue
             
-            # --- "FRESHNESS" & BROKEN VALIDATION ---
+            # --- STRICT FRESHNESS VALIDATION ---
+            # Looks at all days between the zone creation and YESTERDAY
             future_data = search_df.iloc[leg_out_idx + 1 : last_idx]
             is_tested = False
             is_broken = False
@@ -266,13 +245,15 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                         
             if is_broken or is_tested: continue
             
-            # --- DYNAMIC ACTIVE TOUCH ---
+            # --- DYNAMIC ACTIVE TOUCH (FRESHLY MET TODAY) ---
             trading_at_zone = False
             
             if is_bullish:
+                # TODAY'S LOW pierced the proximal line AND hasn't broken the distal line
                 if today_candle['Low'] <= (proximal * 1.025) and live_price >= distal: 
                     trading_at_zone = True
             else:
+                # TODAY'S HIGH pierced the proximal line AND hasn't broken the distal line
                 if today_candle['High'] >= (proximal * 0.975) and live_price <= distal:
                     trading_at_zone = True
             
@@ -281,19 +262,19 @@ def scan_hybrid_gtf_zones(df, is_bullish):
                 
                 return {
                     "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
-                    "50 EMA Alignment": f"✅ Uptrend (↗ {angle}°)" if is_bullish else f"✅ Downtrend (↘ {angle}°)",
+                    "Structure": f"{base_len} Base",
                     "GTF Score": gtf_rating,
                     "Live Price": round(live_price, 2),
                     "Entry (Prox)": round(proximal, 2),
                     "SL (Distal)": round(distal, 2),
-                    "Action": "🎯 HYBRID PULLBACK"
+                    "Action": "🎯 FRESH TAP TODAY"
                 }
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN HYBRID GTF SCAN", type="primary"):
+if st.button("🔥 RUN PURE GTF SCAN", type="primary"):
     is_bull = "Demand" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
@@ -302,43 +283,48 @@ if st.button("🔥 RUN HYBRID GTF SCAN", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>HYBRID 50 EMA</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Filtering by 50 EMA Slope & Hunting Fresh Zones...")
+        progress_text.markdown("#### ⏳ Retrieving Deep History & Mapping Price Action...")
         
         if timeframe in ["6mo", "3mo", "1mo"]:
             interval_val = "1mo"
             period_val = "max"
         elif timeframe == "1wk":
             interval_val = "1wk"
-            period_val = "5y"
-        else: 
+            period_val = "10y" 
+        elif timeframe == "1d":
             interval_val = "1d"
             period_val = "3y" 
+        elif timeframe == "75m":
+            interval_val = "15m"
+            period_val = "60d"
+        else: # 15m
+            interval_val = "15m"
+            period_val = "60d"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Analyzing {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Analyzing Structure {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 
                 if not df.empty:
-                    if timeframe == '6mo': 
-                        df = resample_custom_months(df, 6)
-                    elif timeframe == '3mo':
-                        df = resample_custom_months(df, 3)
-                        
-                    setup = scan_hybrid_gtf_zones(df, is_bull)
+                    if timeframe == '6mo': df = resample_custom_months(df, 6)
+                    elif timeframe == '3mo': df = resample_custom_months(df, 3)
+                    elif timeframe == '75m': df = resample_to_75m(df)
+                    
+                    setup = scan_pure_gtf_zones(df, is_bull)
                     
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -351,18 +337,17 @@ if st.button("🔥 RUN HYBRID GTF SCAN", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets showing a PERFECT HYBRID SETUP (S&D aligned with 50 EMA).")
+            st.success(f"Successfully isolated {len(results)} assets tapping a VERIFIED FRESH GTF Zone today.")
             
-            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', '50 EMA Alignment', 'GTF Score', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
+            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Structure', 'GTF Score', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
             final_df = final_df.sort_values(by="GTF Score", ascending=False)
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['GTF Setup'])\
-              .map(lambda v: 'color: #4FACFE; font-weight: 800;', subset=['50 EMA Alignment'])\
               .map(lambda v: 'color: #F6D365; font-weight: 800; font-size: 16px;', subset=['GTF Score'])\
               .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The Hybrid Filter removed all noise. No fresh S&D zones are currently aligned with the strict 50 EMA Macro Trend.")
+            st.error("0 MATCHES. The algorithm mapped the history, but no stocks freshly tapped an untested S&D zone today.")
