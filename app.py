@@ -40,7 +40,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="gradient-text">MULTI-EMA TACTICAL SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Strict Macro Uptrend Filters | Upward Slope Angles | Sideways Market Rejection</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Absolute Macro Uptrend Lock | Pure Support Pullbacks Only</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -66,9 +66,9 @@ with st.sidebar:
     
     st.divider()
     setup_options = [
-        "🟣 200 EMA Support (0% to +5%)",
-        "🔵 Between 20 & 50 EMA (20 > 50)",
-        "🟡 Near 44 EMA (± 1.5% Bounce)"
+        "🟣 200 EMA Support (0% to +5% Above)",
+        "🔵 Between 20 & 50 EMA (Strict Fan)",
+        "🟡 Near 44 EMA Bounce (Strict Uptrend)"
     ]
     target_setup = st.radio("Target Setup Architecture", setup_options)
 
@@ -140,7 +140,7 @@ def resample_custom_months(df, months):
     return df.resample(rule).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. MULTI-EMA MATHEMATICAL ENGINE
+# 4. MULTI-EMA MATHEMATICAL ENGINE & SLOPE
 # ==========================================
 def calculate_ema_angle(ema_series):
     """Calculates the upward angle of the EMA using 3-period Arctangent Math."""
@@ -164,31 +164,37 @@ def scan_emas(df, target_setup):
     c = df.iloc[-1]
     live_price = c['Close']
     
+    # ==========================================================
+    # ABSOLUTE MACRO UPTREND LAW
+    # If the 200 EMA is not at the absolute bottom, it is a DOWNTREND. Trash it instantly.
+    # ==========================================================
+    if c['EMA_50'] <= c['EMA_200'] or c['EMA_20'] <= c['EMA_200']:
+        return None
+    
     # SETUP 1: 200 EMA Support
     if "200 EMA" in target_setup:
-        # MACRO TREND FILTER: 50 EMA must be above 200 EMA (Rejects Downtrends/Sideways)
-        if c['EMA_50'] <= c['EMA_200']: return None
-        
+        # Require a strict upward slope of the 200 EMA
         angle = calculate_ema_angle(df['EMA_200'])
-        if angle <= 0: return None # Strict Upward Slope Filter
+        if angle <= 1: return None 
         
+        # Price must be physically ABOVE the 200 EMA (acting as a floor) and within 5% of it.
         if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
             return {
                 "Setup Filter": "🟣 200 EMA Support",
                 "Live Price": round(live_price, 2),
                 "Key Level": f"EMA 200: {round(c['EMA_200'], 2)}",
-                "Distance": f"{round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)}% Away",
+                "Distance": f"+{round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)}% Above",
                 "EMA Angle": f"↗️ {angle}°",
                 "Action": "🎯 BUY THE DIP"
             }
             
     # SETUP 2: Between 20 & 50 EMA Trap
     elif "Between 20 & 50" in target_setup:
-        # MACRO TREND FILTER: Perfect Uptrend Fan (20 > 50 > 200)
+        # PERFECT FAN LAW: 20 > 50 > 200 must be perfectly aligned
         if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
         
         angle = calculate_ema_angle(df['EMA_50'])
-        if angle <= 0: return None 
+        if angle <= 1: return None 
         
         if c['EMA_50'] <= live_price <= c['EMA_20']:
             return {
@@ -202,11 +208,11 @@ def scan_emas(df, target_setup):
 
     # SETUP 3: Near 44 EMA Bounce
     elif "Near 44 EMA" in target_setup:
-        # MACRO TREND FILTER: 44 EMA must be above 200 EMA (Rejects Downtrends/Sideways)
+        # PERFECT UPTREND LAW: 44 must be strictly above 200
         if c['EMA_44'] <= c['EMA_200']: return None
         
         angle = calculate_ema_angle(df['EMA_44'])
-        if angle <= 0: return None 
+        if angle <= 1: return None 
         
         lower_band = c['EMA_44'] * 0.985
         upper_band = c['EMA_44'] * 1.015
@@ -226,7 +232,7 @@ def scan_emas(df, target_setup):
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
+if st.button("🔥 RUN STRICT UPTREND SCANNER", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -234,14 +240,14 @@ if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{total_stocks} ASSETS</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>TREND PULLBACK</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>ALGORITHM</span><h2>STRICT UPTREND</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching Deep History & Validating Macro Uptrends...")
+        progress_text.markdown("#### ⏳ Fetching Deep History & Purging Downtrend Garbage...")
         
         if timeframe in ["6mo", "3mo", "1mo"]:
             interval_val = "1mo"
@@ -264,7 +270,7 @@ if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
         results = []
         
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Validating Trend for {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Enforcing Uptrend Laws: {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             
             try:
@@ -288,7 +294,7 @@ if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Successfully isolated {len(results)} assets in a STRICT MACRO UPTREND pulling back to targets.")
+            st.success(f"Successfully isolated {len(results)} assets in a FLAWLESS MACRO UPTREND pulling back to targets.")
             
             final_df = pd.DataFrame(results)[['Asset', 'Setup Filter', 'Live Price', 'Key Level', 'Distance', 'EMA Angle', 'Action']]
             
@@ -305,4 +311,4 @@ if st.button("🔥 RUN UPTREND EMA SCANNER", type="primary"):
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error(f"0 MATCHES. No assets currently meet the macro uptrend criteria AND possess a positive upward EMA slope pulling back to the zone.")
+            st.error(f"0 MATCHES. The Strict Uptrend Law filtered out all the noise. No stocks meet the perfect Fan criteria right now.")
