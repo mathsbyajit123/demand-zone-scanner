@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Dual-Option EMA Scanner", layout="wide")
+st.set_page_config(page_title="EMA & RSI DVG Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">DUAL-OPTION EMA SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">BOS Filtered 20-50 Range | 200 EMA Support & Resistance</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">EMA & RSI DIVERGENCE TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Strict Close BOS | Hidden & Regular RSI DVG Integration | Dual EMA Engines</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -69,9 +69,13 @@ with st.sidebar:
     st.write("")
     st.markdown("**Target EMA Option**")
     target_setup = st.radio("Select Strategy Engine", [
-        "🔵 Option 1: 20 & 50 EMA Range (with BOS)",
+        "🔵 Option 1: 20 & 50 EMA Range (Strict BOS)",
         "🟣 Option 2: 200 EMA Support / Resistance"
     ], label_visibility="collapsed")
+    
+    st.divider()
+    st.markdown("### **RSI DVG CONTROLS**")
+    require_dvg = st.checkbox("Require RSI Divergence (Strict Lock)", value=False, help="If checked, only setups with confirmed Hidden or Regular RSI Divergence will be shown.")
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -112,11 +116,7 @@ def get_index_tickers(sector_name):
     elif "250" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
     elif "50" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
     
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     try:
         session = requests.Session()
@@ -137,125 +137,143 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. EMA MATHEMATICS ENGINE + BOS
+# 4. MATH ENGINE: EMA + BOS + RSI DVG
 # ==========================================
 def calculate_ema_angle(ema_series):
-    """Calculates the exact slope trajectory of the EMA."""
     try:
         y1 = ema_series.iloc[-4] 
         y2 = ema_series.iloc[-1] 
         roc_pct = ((y2 - y1) / y1) * 100 
         angle = np.degrees(np.arctan(roc_pct * 5)) 
         return round(angle, 1)
-    except:
-        return 0
+    except: return 0
 
-def scan_pure_ema(df, is_bullish, target_setup):
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def check_rsi_divergence(df, is_bullish):
+    if len(df) < 35: return "No DVG"
+    
+    recent_price_low = df['Low'].iloc[-15:-1].min()
+    prior_price_low = df['Low'].iloc[-30:-15].min()
+    recent_rsi_low = df['RSI'].iloc[-15:-1].min()
+    prior_rsi_low = df['RSI'].iloc[-30:-15].min()
+    
+    recent_price_high = df['High'].iloc[-15:-1].max()
+    prior_price_high = df['High'].iloc[-30:-15].max()
+    recent_rsi_high = df['RSI'].iloc[-15:-1].max()
+    prior_rsi_high = df['RSI'].iloc[-30:-15].max()
+    
+    if is_bullish:
+        if recent_price_low < prior_price_low and recent_rsi_low > prior_rsi_low:
+            return "✅ Regular Bull DVG"
+        elif recent_price_low > prior_price_low and recent_rsi_low < prior_rsi_low:
+            return "⚡ Hidden Bull DVG"
+    else:
+        if recent_price_high > prior_price_high and recent_rsi_high < prior_rsi_high:
+            return "✅ Regular Bear DVG"
+        elif recent_price_high < prior_price_high and recent_rsi_high > prior_rsi_high:
+            return "⚡ Hidden Bear DVG"
+            
+    return "No DVG"
+
+def scan_integrated_engine(df, is_bullish, target_setup, require_dvg):
     if len(df) < 205: return None 
     
-    # Calculate Core Moving Averages
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    df['RSI'] = calculate_rsi(df['Close'], 14)
     
     c = df.iloc[-1]
     live_price = c['Close']
+    dvg_status = check_rsi_divergence(df, is_bullish)
+    
+    if require_dvg and "DVG" not in dvg_status: return None
     
     # ==========================================
-    # BULLISH LOGIC (UPTRENDS)
+    # BULLISH LOGIC
     # ==========================================
     if is_bullish:
-        # OPTION 1: 20 & 50 EMA RANGE + BOS
         if "Option 1" in target_setup:
-            # Macro Alignment ensures overall uptrend
             if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
             
             angle = calculate_ema_angle(df['EMA_50'])
-            if angle <= 0: return None # Strict Upward Slope Filter
+            if angle <= 0: return None 
             
-            # --- BREAK OF STRUCTURE (BOS) LOGIC ---
-            # Recent Peak (last 20 periods) must be HIGHER than Prior Peak (periods 20 to 40 ago)
-            recent_peak = df['High'].iloc[-20:-1].max()
-            prior_peak = df['High'].iloc[-40:-20].max()
-            if recent_peak <= prior_peak: return None # Discard if it didn't break structure
+            prior_peak_high = df['High'].iloc[-40:-20].max()
+            recent_closes = df['Close'].iloc[-20:-1]
+            if not (recent_closes > prior_peak_high).any(): return None 
             
-            # Price must be physically inside the 20 and 50 gap pulling back
             if c['EMA_50'] <= live_price <= c['EMA_20']:
                 return {
-                    "Setup": "🟢 Bullish 20-50 Range",
-                    "Structure Validated": "✅ BOS Confirmed",
+                    "Setup": "🟢 Bull 20-50 Range",
+                    "BOS Check": "✅ Body Closed High",
+                    "RSI DVG": dvg_status,
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
-                    "Trend Slope": f"↗️ {angle}° Up",
                     "Status": "🎯 BUY THE RANGE"
                 }
 
-        # OPTION 2: 200 EMA SUPPORT (Untouched)
         elif "Option 2" in target_setup:
-            # Macro Alignment: 50 > 200 (Ensures it's an uptrend pullback)
             if c['EMA_50'] <= c['EMA_200']: return None
             
             angle = calculate_ema_angle(df['EMA_200'])
             if angle <= 0: return None 
             
-            # Price must be resting on top of the 200 EMA (within 5% buffer)
             if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
                 distance = round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)
                 return {
-                    "Setup": "🟢 Bullish 200 Support",
-                    "Structure Validated": "N/A (200 Setup)",
+                    "Setup": "🟢 Bull 200 Support",
+                    "BOS Check": "N/A (200 Setup)",
+                    "RSI DVG": dvg_status,
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
-                    "Trend Slope": f"↗️ {angle}° Up",
                     "Status": f"🎯 BUY SUPPORT (+{distance}%)"
                 }
 
     # ==========================================
-    # BEARISH LOGIC (DOWNTRENDS)
+    # BEARISH LOGIC
     # ==========================================
     elif not is_bullish:
-        # OPTION 1: 20 & 50 EMA RANGE + BOS
         if "Option 1" in target_setup:
-            # Macro Alignment ensures overall downtrend
             if not (c['EMA_20'] < c['EMA_50'] < c['EMA_200']): return None
             
             angle = calculate_ema_angle(df['EMA_50'])
-            if angle >= 0: return None # Strict Downward Slope Filter
+            if angle >= 0: return None 
             
-            # --- BREAK OF STRUCTURE (BOS) LOGIC ---
-            # Recent Trough (last 20 periods) must be LOWER than Prior Trough (periods 20 to 40 ago)
-            recent_trough = df['Low'].iloc[-20:-1].min()
-            prior_trough = df['Low'].iloc[-40:-20].min()
-            if recent_trough >= prior_trough: return None # Discard if it didn't break structure
+            prior_trough_low = df['Low'].iloc[-40:-20].min()
+            recent_closes = df['Close'].iloc[-20:-1]
+            if not (recent_closes < prior_trough_low).any(): return None 
             
-            # Price must be physically inside the 20 and 50 gap pulling up into resistance
             if c['EMA_20'] <= live_price <= c['EMA_50']:
                 return {
-                    "Setup": "🔴 Bearish 20-50 Range",
-                    "Structure Validated": "✅ BOS Confirmed",
+                    "Setup": "🔴 Bear 20-50 Range",
+                    "BOS Check": "✅ Body Closed Low",
+                    "RSI DVG": dvg_status,
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
-                    "Trend Slope": f"↘️ {angle}° Down",
                     "Status": "🎯 SELL THE RANGE"
                 }
 
-        # OPTION 2: 200 EMA RESISTANCE (Untouched)
         elif "Option 2" in target_setup:
-            # Macro Alignment: 50 < 200 (Ensures it's a downtrend pullback)
             if c['EMA_50'] >= c['EMA_200']: return None
             
             angle = calculate_ema_angle(df['EMA_200'])
             if angle >= 0: return None 
             
-            # Price must be rejecting off the bottom of the 200 EMA (within 5% below)
             if (c['EMA_200'] * 0.95) <= live_price <= c['EMA_200']:
                 distance = round(((c['EMA_200'] - live_price) / c['EMA_200']) * 100, 2)
                 return {
-                    "Setup": "🔴 Bearish 200 Resistance",
-                    "Structure Validated": "N/A (200 Setup)",
+                    "Setup": "🔴 Bear 200 Resistance",
+                    "BOS Check": "N/A (200 Setup)",
+                    "RSI DVG": dvg_status,
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
-                    "Trend Slope": f"↘️ {angle}° Down",
                     "Status": f"🎯 SELL RESISTANCE (-{distance}%)"
                 }
 
@@ -264,7 +282,7 @@ def scan_pure_ema(df, is_bullish, target_setup):
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
+if st.button("🔥 RUN INTEGRATED SCANNER", type="primary"):
     is_bull = "Bullish" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
@@ -274,7 +292,7 @@ if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
         
-        mode_label = "20-50 + BOS" if "Option 1" in target_setup else "200 SUPPORT/RES"
+        mode_label = "20-50 BOS + RSI" if "Option 1" in target_setup else "200 EMA + RSI"
         with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>{mode_label}</h2></div>", unsafe_allow_html=True)
 
         st.write("")
@@ -282,7 +300,7 @@ if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Filtering Options & Validating Structural Swings...")
+        progress_text.markdown("#### ⏳ Mapping EMA Vectors & Calculating RSI Divergences...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
         elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
@@ -293,13 +311,13 @@ if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
         
         results = []
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Processing Asset {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Checking Institutional DVG: {i + 1} / {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = scan_pure_ema(df, is_bull, target_setup)
+                    setup = scan_integrated_engine(df, is_bull, target_setup, require_dvg)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -310,16 +328,16 @@ if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets matching your specific {mode_label} logic.")
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Structure Validated', 'Live Price', 'Action Zone', 'Trend Slope', 'Status']]
+            st.success(f"Isolated {len(results)} assets. BOS & RSI DVG processing complete.")
+            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'BOS Check', 'RSI DVG', 'Live Price', 'Action Zone', 'Status']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Setup'])\
-              .map(lambda v: 'color: #4FACFE; font-weight: 800;' if '✅' in str(v) else 'color: #64748B;', subset=['Structure Validated'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Trend Slope'])\
+              .map(lambda v: 'color: #4FACFE; font-weight: 800;' if '✅' in str(v) else 'color: #64748B;', subset=['BOS Check'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;' if 'DVG' in str(v) else 'color: #64748B;', subset=['RSI DVG'])\
               .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Status'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error(f"0 MATCHES. No stocks currently satisfy the logic for the '{mode_label}' option.")
+            st.error(f"0 MATCHES. No stocks currently satisfy the logic for the selected options.")
