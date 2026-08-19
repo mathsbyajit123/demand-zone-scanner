@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Pure EMA Trend Scanner", layout="wide")
+st.set_page_config(page_title="Dual-Option EMA Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">PURE EMA MACRO SCANNER</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">100% Mathematical Trend Filter | Strict Slopes | No Subjective Price Action</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">DUAL-OPTION EMA SCANNER</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">BOS Filtered 20-50 Range | 200 EMA Support & Resistance</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -63,14 +63,15 @@ with st.sidebar:
     timeframe = tf_options[tf_label]
     
     st.divider()
-    st.markdown("### **ALGORITHM VECTORS**")
+    st.markdown("### **SCANNER CONFIGURATION**")
     direction = st.radio("Trend Direction", ("🟢 Bullish (Uptrends)", "🔴 Bearish (Downtrends)"))
     
-    setup_options = [
-        "🔵 20-50 EMA Trap (Trend Continuation)",
-        "🟣 200 EMA Bounce (Macro Support/Resistance)"
-    ]
-    target_setup = st.radio("Target Setup Architecture", setup_options)
+    st.write("")
+    st.markdown("**Target EMA Option**")
+    target_setup = st.radio("Select Strategy Engine", [
+        "🔵 Option 1: 20 & 50 EMA Range (with BOS)",
+        "🟣 Option 2: 200 EMA Support / Resistance"
+    ], label_visibility="collapsed")
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -136,7 +137,7 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. PURE EMA MATHEMATICS ENGINE
+# 4. EMA MATHEMATICS ENGINE + BOS
 # ==========================================
 def calculate_ema_angle(ema_series):
     """Calculates the exact slope trajectory of the EMA."""
@@ -161,81 +162,101 @@ def scan_pure_ema(df, is_bullish, target_setup):
     live_price = c['Close']
     
     # ==========================================
-    # BULLISH LOGIC
+    # BULLISH LOGIC (UPTRENDS)
     # ==========================================
     if is_bullish:
-        if "20-50 EMA" in target_setup:
-            # Macro Alignment: 20 > 50 > 200
+        # OPTION 1: 20 & 50 EMA RANGE + BOS
+        if "Option 1" in target_setup:
+            # Macro Alignment ensures overall uptrend
             if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
             
             angle = calculate_ema_angle(df['EMA_50'])
-            if angle <= 1: return None # Strict Upward Slope Filter
+            if angle <= 0: return None # Strict Upward Slope Filter
             
-            # Price must be physically inside the 20 and 50 gap
+            # --- BREAK OF STRUCTURE (BOS) LOGIC ---
+            # Recent Peak (last 20 periods) must be HIGHER than Prior Peak (periods 20 to 40 ago)
+            recent_peak = df['High'].iloc[-20:-1].max()
+            prior_peak = df['High'].iloc[-40:-20].max()
+            if recent_peak <= prior_peak: return None # Discard if it didn't break structure
+            
+            # Price must be physically inside the 20 and 50 gap pulling back
             if c['EMA_50'] <= live_price <= c['EMA_20']:
                 return {
-                    "Setup": "🟢 Bullish 20-50 Trap",
+                    "Setup": "🟢 Bullish 20-50 Range",
+                    "Structure Validated": "✅ BOS Confirmed",
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
                     "Trend Slope": f"↗️ {angle}° Up",
-                    "Status": "🎯 BUY ACCUMULATION"
+                    "Status": "🎯 BUY THE RANGE"
                 }
 
-        elif "200 EMA" in target_setup:
-            # Macro Alignment: 50 > 200 (Ensures it's an uptrend pullback, not a crash)
+        # OPTION 2: 200 EMA SUPPORT (Untouched)
+        elif "Option 2" in target_setup:
+            # Macro Alignment: 50 > 200 (Ensures it's an uptrend pullback)
             if c['EMA_50'] <= c['EMA_200']: return None
             
             angle = calculate_ema_angle(df['EMA_200'])
-            if angle <= 1: return None 
+            if angle <= 0: return None 
             
-            # Price must be bouncing off the top of the 200 EMA (within 5% buffer)
+            # Price must be resting on top of the 200 EMA (within 5% buffer)
             if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
                 distance = round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)
                 return {
-                    "Setup": "🟢 Bullish 200 Bounce",
+                    "Setup": "🟢 Bullish 200 Support",
+                    "Structure Validated": "N/A (200 Setup)",
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
                     "Trend Slope": f"↗️ {angle}° Up",
-                    "Status": f"🎯 BUY DIP (+{distance}%)"
+                    "Status": f"🎯 BUY SUPPORT (+{distance}%)"
                 }
 
     # ==========================================
-    # BEARISH LOGIC
+    # BEARISH LOGIC (DOWNTRENDS)
     # ==========================================
     elif not is_bullish:
-        if "20-50 EMA" in target_setup:
-            # Macro Alignment: 20 < 50 < 200
+        # OPTION 1: 20 & 50 EMA RANGE + BOS
+        if "Option 1" in target_setup:
+            # Macro Alignment ensures overall downtrend
             if not (c['EMA_20'] < c['EMA_50'] < c['EMA_200']): return None
             
             angle = calculate_ema_angle(df['EMA_50'])
-            if angle >= -1: return None # Strict Downward Slope Filter
+            if angle >= 0: return None # Strict Downward Slope Filter
             
-            # Price must be physically inside the 20 and 50 gap pulling up
+            # --- BREAK OF STRUCTURE (BOS) LOGIC ---
+            # Recent Trough (last 20 periods) must be LOWER than Prior Trough (periods 20 to 40 ago)
+            recent_trough = df['Low'].iloc[-20:-1].min()
+            prior_trough = df['Low'].iloc[-40:-20].min()
+            if recent_trough >= prior_trough: return None # Discard if it didn't break structure
+            
+            # Price must be physically inside the 20 and 50 gap pulling up into resistance
             if c['EMA_20'] <= live_price <= c['EMA_50']:
                 return {
-                    "Setup": "🔴 Bearish 20-50 Trap",
+                    "Setup": "🔴 Bearish 20-50 Range",
+                    "Structure Validated": "✅ BOS Confirmed",
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
                     "Trend Slope": f"↘️ {angle}° Down",
-                    "Status": "🎯 SELL DISTRIBUTION"
+                    "Status": "🎯 SELL THE RANGE"
                 }
 
-        elif "200 EMA" in target_setup:
-            # Macro Alignment: 50 < 200 (Ensures it's a downtrend pullback, not a breakout)
+        # OPTION 2: 200 EMA RESISTANCE (Untouched)
+        elif "Option 2" in target_setup:
+            # Macro Alignment: 50 < 200 (Ensures it's a downtrend pullback)
             if c['EMA_50'] >= c['EMA_200']: return None
             
             angle = calculate_ema_angle(df['EMA_200'])
-            if angle >= -1: return None 
+            if angle >= 0: return None 
             
             # Price must be rejecting off the bottom of the 200 EMA (within 5% below)
             if (c['EMA_200'] * 0.95) <= live_price <= c['EMA_200']:
                 distance = round(((c['EMA_200'] - live_price) / c['EMA_200']) * 100, 2)
                 return {
-                    "Setup": "🔴 Bearish 200 Reject",
+                    "Setup": "🔴 Bearish 200 Resistance",
+                    "Structure Validated": "N/A (200 Setup)",
                     "Live Price": round(live_price, 2),
                     "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
                     "Trend Slope": f"↘️ {angle}° Down",
-                    "Status": f"🎯 SELL REJECT (-{distance}%)"
+                    "Status": f"🎯 SELL RESISTANCE (-{distance}%)"
                 }
 
     return None
@@ -243,7 +264,7 @@ def scan_pure_ema(df, is_bullish, target_setup):
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN PURE EMA SCANNER", type="primary"):
+if st.button("🔥 RUN EMA OPTION SCANNER", type="primary"):
     is_bull = "Bullish" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
@@ -252,14 +273,16 @@ if st.button("🔥 RUN PURE EMA SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
+        
+        mode_label = "20-50 + BOS" if "Option 1" in target_setup else "200 SUPPORT/RES"
+        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>{mode_label}</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Calculating Moving Average Trajectories...")
+        progress_text.markdown("#### ⏳ Filtering Options & Validating Structural Swings...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
         elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
@@ -270,7 +293,7 @@ if st.button("🔥 RUN PURE EMA SCANNER", type="primary"):
         
         results = []
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Validating Math Vectors {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Processing Asset {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
@@ -287,15 +310,16 @@ if st.button("🔥 RUN PURE EMA SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets matching exact mathematical EMA criteria.")
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Action Zone', 'Trend Slope', 'Status']]
+            st.success(f"Isolated {len(results)} assets matching your specific {mode_label} logic.")
+            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Structure Validated', 'Live Price', 'Action Zone', 'Trend Slope', 'Status']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Setup'])\
+              .map(lambda v: 'color: #4FACFE; font-weight: 800;' if '✅' in str(v) else 'color: #64748B;', subset=['Structure Validated'])\
               .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Trend Slope'])\
               .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Status'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. No stocks currently satisfy the strict EMA logic for the selected direction.")
+            st.error(f"0 MATCHES. No stocks currently satisfy the logic for the '{mode_label}' option.")
