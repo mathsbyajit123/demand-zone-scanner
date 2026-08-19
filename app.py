@@ -11,13 +11,13 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="Apex Tunable GTF Scanner", layout="wide")
+st.set_page_config(page_title="Pure EMA Trend Scanner", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 34px; letter-spacing: -1px;
+        font-weight: 900; font-size: 38px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -39,34 +39,38 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">TUNABLE GTF TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Adjustable Strictness | Pullback Mapper | Watchlist Proximity Radar</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">PURE EMA MACRO SCANNER</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">100% Mathematical Trend Filter | Strict Slopes | No Subjective Price Action</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. COMMAND CENTER & TUNING PANEL
+# 2. COMMAND CENTER
 # ==========================================
 with st.sidebar:
     st.markdown("### **COMMAND CENTER**")
     st.divider()
     
     sector_options = ["F&O Stocks (~242)", "Nifty 50", "Nifty 500", "Nifty Smallcap 250"]
-    selected_sector = st.selectbox("Market Universe", sector_options, index=0)
+    selected_sector = st.selectbox("Market Universe", sector_options, index=2)
     
-    tf_options = {"15 Min": "15m", "75 Min": "75m", "1 Day": "1d", "1 Week": "1wk", "1 Month": "1mo"}
-    tf_label = st.selectbox("Resolution", list(tf_options.keys()), index=2)
+    tf_options = {
+        "15 Min": "15m",
+        "75 Min": "75m",
+        "1 Day": "1d", 
+        "1 Week": "1wk",
+        "1 Month": "1mo"
+    }
+    tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
-    direction = st.radio("Target Zone Vector", ("🟢 Demand (Buy Pullbacks)", "🔴 Supply (Sell Pullbacks)"))
-    
     st.divider()
-    st.markdown("### **⚙️ ALGORITHM TUNING**")
-    base_tolerance = st.selectbox("Base Candle Structure", ["Strictly 1 Base Candle", "Allow 1 to 3 Base Candles"], index=0)
-    target_mode = st.selectbox("Opposing Target Filter", ["Require Mapped Target (Strict)", "Show All Valid Entries (Flexible)"], index=1)
-    proximity = st.selectbox("Entry Trigger", ["Freshly Tapping Zone Today", "Approaching Zone (Within 3%)"], index=1)
+    st.markdown("### **ALGORITHM VECTORS**")
+    direction = st.radio("Trend Direction", ("🟢 Bullish (Uptrends)", "🔴 Bearish (Downtrends)"))
     
-    max_bases = 1 if "Strictly 1" in base_tolerance else 3
-    require_target = "Strict" in target_mode
-    is_approaching = "Approaching" in proximity
+    setup_options = [
+        "🔵 20-50 EMA Trap (Trend Continuation)",
+        "🟣 200 EMA Bounce (Macro Support/Resistance)"
+    ]
+    target_setup = st.radio("Target Setup Architecture", setup_options)
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -107,13 +111,19 @@ def get_index_tickers(sector_name):
     elif "250" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
     elif "50" in sector_name: url = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    
     try:
         session = requests.Session()
         session.headers.update(headers)
         session.get("https://www.nseindia.com", timeout=10) 
         time.sleep(1) 
         response = session.get(url, timeout=10) 
+        
         if response.status_code == 200:
             df = pd.read_csv(io.StringIO(response.text))
             return [f"{s.strip()}.NS" for s in df['Symbol']]
@@ -126,175 +136,130 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. TUNABLE GTF ENGINE
+# 4. PURE EMA MATHEMATICS ENGINE
 # ==========================================
-def analyze_gtf_candles(df):
-    df['Range'] = df['High'] - df['Low']
-    df['Body'] = abs(df['Close'] - df['Open'])
-    df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
-    
-    conditions = [
-        (df['Body_Pct'] > 55) & (df['Close'] > df['Open']),  
-        (df['Body_Pct'] > 55) & (df['Close'] < df['Open']),  
-        (df['Body_Pct'] <= 55)                               
-    ]
-    choices = ['Green Exciting', 'Red Exciting', 'Base']
-    df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
-    return df
+def calculate_ema_angle(ema_series):
+    """Calculates the exact slope trajectory of the EMA."""
+    try:
+        y1 = ema_series.iloc[-4] 
+        y2 = ema_series.iloc[-1] 
+        roc_pct = ((y2 - y1) / y1) * 100 
+        angle = np.degrees(np.arctan(roc_pct * 5)) 
+        return round(angle, 1)
+    except:
+        return 0
 
-def scan_tunable_zones(df, is_bullish, max_bases, require_target, is_approaching):
-    if len(df) < 30: return None
+def scan_pure_ema(df, is_bullish, target_setup):
+    if len(df) < 205: return None 
     
-    df = analyze_gtf_candles(df)
-    search_df = df.tail(300) 
-    last_idx = len(search_df) - 1
-    today_candle = search_df.iloc[last_idx]
-    live_price = today_candle['Close']
+    # Calculate Core Moving Averages
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     
-    for i in range(1, last_idx - 3):
-        leg_in = search_df.iloc[i-1]
-        if leg_in['GTF_Type'] == 'Base': continue 
-        
-        # Count consecutive bases based on tolerance limit
-        base_count = 0
-        valid_leg_out_idx = None
-        
-        for j in range(i, min(i + 5, last_idx)):
-            if search_df.iloc[j]['GTF_Type'] == 'Base':
-                base_count += 1
-            else:
-                break
-                
-        if base_count == 0 or base_count > max_bases: continue
-        
-        base_candles = search_df.iloc[i : i+base_count]
-        
-        # 1st or 2nd Candle Breakout Logic
-        leg_out_1_idx = i + base_count
-        leg_out_2_idx = leg_out_1_idx + 1
-        
-        if leg_out_2_idx > last_idx: continue
-        
-        leg_out_1 = search_df.iloc[leg_out_1_idx]
-        leg_out_2 = search_df.iloc[leg_out_2_idx]
-        
-        pattern = None
-        
-        if is_bullish:
-            if leg_out_1['GTF_Type'] == 'Green Exciting' and leg_out_1['Close'] > leg_in['High']:
-                valid_leg_out_idx = leg_out_1_idx
-            elif leg_out_2['GTF_Type'] == 'Green Exciting' and leg_out_2['Close'] > leg_in['High']:
-                valid_leg_out_idx = leg_out_2_idx
-                
-            if valid_leg_out_idx:
-                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
-                distal = base_candles['Low'].min()
-                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR'
+    c = df.iloc[-1]
+    live_price = c['Close']
+    
+    # ==========================================
+    # BULLISH LOGIC
+    # ==========================================
+    if is_bullish:
+        if "20-50 EMA" in target_setup:
+            # Macro Alignment: 20 > 50 > 200
+            if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
+            
+            angle = calculate_ema_angle(df['EMA_50'])
+            if angle <= 1: return None # Strict Upward Slope Filter
+            
+            # Price must be physically inside the 20 and 50 gap
+            if c['EMA_50'] <= live_price <= c['EMA_20']:
+                return {
+                    "Setup": "🟢 Bullish 20-50 Trap",
+                    "Live Price": round(live_price, 2),
+                    "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
+                    "Trend Slope": f"↗️ {angle}° Up",
+                    "Status": "🎯 BUY ACCUMULATION"
+                }
 
-        elif not is_bullish:
-            if leg_out_1['GTF_Type'] == 'Red Exciting' and leg_out_1['Close'] < leg_in['Low']:
-                valid_leg_out_idx = leg_out_1_idx
-            elif leg_out_2['GTF_Type'] == 'Red Exciting' and leg_out_2['Close'] < leg_in['Low']:
-                valid_leg_out_idx = leg_out_2_idx
-                
-            if valid_leg_out_idx:
-                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
-                distal = base_candles['High'].max()
-                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD'
-                
-        if not valid_leg_out_idx: continue
-        
-        # Freshness Check
-        future_data = search_df.iloc[valid_leg_out_idx + 1 : last_idx]
-        is_tested = False
-        
-        if not future_data.empty:
-            for _, past_candle in future_data.iterrows():
-                if is_bullish and past_candle['Low'] <= proximal: is_tested = True
-                elif not is_bullish and past_candle['High'] >= proximal: is_tested = True
-                    
-        if is_tested: continue
-        
-        # Proximity / Touch Trigger
-        trading_at_zone = False
-        if is_bullish:
-            trigger_level = proximal * 1.03 if is_approaching else proximal
-            if today_candle['Low'] <= trigger_level and live_price >= distal: 
-                trading_at_zone = True
-        else:
-            trigger_level = proximal * 0.97 if is_approaching else proximal
-            if today_candle['High'] >= trigger_level and live_price <= distal:
-                trading_at_zone = True
-                
-        if not trading_at_zone: continue
-        
-        # Pullback Target Mapper
-        fixed_target = None
-        if not future_data.empty:
-            if is_bullish:
-                peak_idx = future_data['High'].idxmax()
-                pullback_leg = search_df.loc[peak_idx : last_idx.name]
-                for t_i in range(1, len(pullback_leg) - 2):
-                    if pullback_leg.iloc[t_i-1]['GTF_Type'] == 'Base': continue
-                    for t_b in range(1, 4): 
-                        if t_i + t_b >= len(pullback_leg): continue
-                        t_bases = pullback_leg.iloc[t_i : t_i+t_b]
-                        t_leg_out = pullback_leg.iloc[t_i+t_b]
-                        if not all(t_bases['GTF_Type'] == 'Base'): continue
-                        if t_leg_out['GTF_Type'] == 'Red Exciting' and t_leg_out['Close'] < pullback_leg.iloc[t_i-1]['Low']:
-                            t_proximal = min(t_bases['Open'].min(), t_bases['Close'].min())
-                            if t_proximal > proximal:
-                                fixed_target = t_proximal
-                                break
-                    if fixed_target: break
-            else:
-                trough_idx = future_data['Low'].idxmin()
-                pullback_leg = search_df.loc[trough_idx : last_idx.name]
-                for t_i in range(1, len(pullback_leg) - 2):
-                    if pullback_leg.iloc[t_i-1]['GTF_Type'] == 'Base': continue
-                    for t_b in range(1, 4): 
-                        if t_i + t_b >= len(pullback_leg): continue
-                        t_bases = pullback_leg.iloc[t_i : t_i+t_b]
-                        t_leg_out = pullback_leg.iloc[t_i+t_b]
-                        if not all(t_bases['GTF_Type'] == 'Base'): continue
-                        if t_leg_out['GTF_Type'] == 'Green Exciting' and t_leg_out['Close'] > pullback_leg.iloc[t_i-1]['High']:
-                            t_proximal = max(t_bases['Open'].max(), t_bases['Close'].max())
-                            if t_proximal < proximal:
-                                fixed_target = t_proximal
-                                break
-                    if fixed_target: break
+        elif "200 EMA" in target_setup:
+            # Macro Alignment: 50 > 200 (Ensures it's an uptrend pullback, not a crash)
+            if c['EMA_50'] <= c['EMA_200']: return None
+            
+            angle = calculate_ema_angle(df['EMA_200'])
+            if angle <= 1: return None 
+            
+            # Price must be bouncing off the top of the 200 EMA (within 5% buffer)
+            if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
+                distance = round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)
+                return {
+                    "Setup": "🟢 Bullish 200 Bounce",
+                    "Live Price": round(live_price, 2),
+                    "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
+                    "Trend Slope": f"↗️ {angle}° Up",
+                    "Status": f"🎯 BUY DIP (+{distance}%)"
+                }
 
-        if require_target and not fixed_target: continue 
-        
-        risk = abs(proximal - distal)
-        reward = abs(fixed_target - proximal) if fixed_target else 0
-        rr_ratio = f"1 : {round(reward / risk, 1)}" if (fixed_target and risk > 0) else "N/A"
-        
-        return {
-            "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
-            "Bases": f"{base_count}",
-            "Entry (Prox)": round(proximal, 2),
-            "SL (Distal)": round(distal, 2),
-            "Target (Opposing)": f"🎯 {round(fixed_target, 2)}" if fixed_target else "No Target Mapped",
-            "R:R Ratio": rr_ratio,
-            "Live Price": round(live_price, 2)
-        }
+    # ==========================================
+    # BEARISH LOGIC
+    # ==========================================
+    elif not is_bullish:
+        if "20-50 EMA" in target_setup:
+            # Macro Alignment: 20 < 50 < 200
+            if not (c['EMA_20'] < c['EMA_50'] < c['EMA_200']): return None
+            
+            angle = calculate_ema_angle(df['EMA_50'])
+            if angle >= -1: return None # Strict Downward Slope Filter
+            
+            # Price must be physically inside the 20 and 50 gap pulling up
+            if c['EMA_20'] <= live_price <= c['EMA_50']:
+                return {
+                    "Setup": "🔴 Bearish 20-50 Trap",
+                    "Live Price": round(live_price, 2),
+                    "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
+                    "Trend Slope": f"↘️ {angle}° Down",
+                    "Status": "🎯 SELL DISTRIBUTION"
+                }
+
+        elif "200 EMA" in target_setup:
+            # Macro Alignment: 50 < 200 (Ensures it's a downtrend pullback, not a breakout)
+            if c['EMA_50'] >= c['EMA_200']: return None
+            
+            angle = calculate_ema_angle(df['EMA_200'])
+            if angle >= -1: return None 
+            
+            # Price must be rejecting off the bottom of the 200 EMA (within 5% below)
+            if (c['EMA_200'] * 0.95) <= live_price <= c['EMA_200']:
+                distance = round(((c['EMA_200'] - live_price) / c['EMA_200']) * 100, 2)
+                return {
+                    "Setup": "🔴 Bearish 200 Reject",
+                    "Live Price": round(live_price, 2),
+                    "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
+                    "Trend Slope": f"↘️ {angle}° Down",
+                    "Status": f"🎯 SELL REJECT (-{distance}%)"
+                }
+
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN TUNABLE SCANNER", type="primary"):
-    is_bull = "Demand" in direction
+if st.button("🔥 RUN PURE EMA SCANNER", type="primary"):
+    is_bull = "Bullish" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
     if ticker_list:
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
+        with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
+
         st.write("")
+        
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Fetching data & applying custom tuning...")
+        progress_text.markdown("#### ⏳ Calculating Moving Average Trajectories...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
         elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
@@ -305,13 +270,13 @@ if st.button("🔥 RUN TUNABLE SCANNER", type="primary"):
         
         results = []
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Analyzing {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Validating Math Vectors {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = scan_tunable_zones(df, is_bull, max_bases, require_target, is_approaching)
+                    setup = scan_pure_ema(df, is_bull, target_setup)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -322,15 +287,15 @@ if st.button("🔥 RUN TUNABLE SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets matching your custom tolerances.")
-            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Bases', 'Entry (Prox)', 'SL (Distal)', 'Target (Opposing)', 'R:R Ratio', 'Live Price']]
+            st.success(f"Isolated {len(results)} assets matching exact mathematical EMA criteria.")
+            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', 'Action Zone', 'Trend Slope', 'Status']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
-            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['GTF Setup'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;' if '🎯' in str(v) else 'color: #64748B;', subset=['Target (Opposing)'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 900;' if '1 :' in str(v) else 'color: #64748B;', subset=['R:R Ratio'])
+            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Setup'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Trend Slope'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Status'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. Try loosening the Base Candle Tolerance or Entry Trigger to find more setups.")
+            st.error("0 MATCHES. No stocks currently satisfy the strict EMA logic for the selected direction.")
