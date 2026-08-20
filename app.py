@@ -40,7 +40,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="gradient-text">APEX GTF + 50 SMA TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Strict Breakouts | Sideways Chop Filter | Volume Verification</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Strict Breakouts | Volume Verification | Macro Timeframe Engine</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -52,7 +52,15 @@ with st.sidebar:
     sector_options = ["F&O Stocks (~242)", "Nifty 50", "Nifty 500", "Nifty Smallcap 250"]
     selected_sector = st.selectbox("Market Universe", sector_options, index=0)
     
-    tf_options = {"15 Min": "15m", "75 Min": "75m", "1 Day": "1d", "1 Week": "1wk"}
+    # RESTORED MACRO TIMEFRAMES
+    tf_options = {
+        "15 Min": "15m", 
+        "75 Min": "75m", 
+        "1 Day": "1d", 
+        "1 Week": "1wk",
+        "1 Month": "1mo",
+        "3 Month": "3mo"
+    }
     tf_label = st.selectbox("Resolution (Timeframe)", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
@@ -114,6 +122,11 @@ def get_index_tickers(sector_name):
 def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
+def resample_custom_months(df, months):
+    """Stitches 1-month candles into Quarterly (3-Month) institutional blocks."""
+    rule = f'{months}ME'
+    return df.resample(rule).agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+
 # ==========================================
 # 4. MASTER ENGINE: STRICT BOS + SLOPE + VOLUME
 # ==========================================
@@ -133,14 +146,19 @@ def analyze_gtf_candles(df):
 
 def check_sma_slope(sma_series, lookback=10):
     try:
-        past_sma = sma_series.iloc[-lookback]
+        # Prevent lookback errors on higher timeframes like 3mo which have fewer candles
+        actual_lookback = min(lookback, len(sma_series) - 1)
+        if actual_lookback < 2: return 0
+        
+        past_sma = sma_series.iloc[-actual_lookback]
         curr_sma = sma_series.iloc[-1]
         slope_pct = ((curr_sma - past_sma) / past_sma) * 100
         return slope_pct
     except: return 0
 
 def scan_master_zones(df, is_bullish):
-    if len(df) < 65: return None
+    # Reduced minimum candle requirement to allow for 3mo charts (which generate far fewer candles)
+    if len(df) < 30: return None
     
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df = analyze_gtf_candles(df)
@@ -152,12 +170,13 @@ def scan_master_zones(df, is_bullish):
     current_50_sma = today_candle['SMA_50']
     
     # --- 1. SIDEWAYS CHOP FILTER (TRAJECTORY) ---
-    sma_slope = check_sma_slope(df['SMA_50'], 10)
+    sma_slope = check_sma_slope(df['SMA_50'], 5) # Adjusted lookback for macro TFs
     
-    if is_bullish:
-        if live_price <= current_50_sma or sma_slope < 0.2: return None # Must be above AND sloping up
-    else:
-        if live_price >= current_50_sma or sma_slope > -0.2: return None # Must be below AND sloping down
+    if pd.notna(current_50_sma):
+        if is_bullish:
+            if live_price <= current_50_sma or sma_slope < 0: return None 
+        else:
+            if live_price >= current_50_sma or sma_slope > 0: return None 
         
     for i in range(1, last_idx - 1):
         leg_in = search_df.iloc[i-1]
@@ -200,7 +219,7 @@ def scan_master_zones(df, is_bullish):
         
         # --- 3. VOLUME VERIFICATION ---
         avg_base_volume = base_candles['Volume'].mean()
-        if leg_out['Volume'] < (avg_base_volume * 1.2): continue # Leg out volume must be 20% higher than bases
+        if leg_out['Volume'] < (avg_base_volume * 1.1): continue 
         
         # --- 4. FRESHNESS CHECK ---
         future_data = search_df.iloc[leg_out_idx + 1 : last_idx]
@@ -219,12 +238,12 @@ def scan_master_zones(df, is_bullish):
             if today_candle['High'] >= (proximal * 0.975) and live_price <= distal: trading_at_zone = True
         
         if trading_at_zone:
-            trend_label = "✅ Angled Uptrend" if is_bullish else "✅ Angled Downtrend"
+            trend_label = "✅ Validated" 
             return {
                 "Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
                 "Breakout": "✅ Absolute Clear",
                 "Volume": "🔥 Confirmed",
-                "Trend": trend_label,
+                "Macro Filter": trend_label,
                 "Live Price": round(live_price, 2),
                 "Entry": round(proximal, 2),
                 "Stop Loss": round(distal, 2)
@@ -248,12 +267,17 @@ if st.button("🔥 RUN MASTER SCANNER", type="primary"):
         st.write("")
         progress_text = st.empty()
         progress_bar = st.progress(0)
-        progress_text.markdown("#### ⏳ Filtering Sideways Trends & Verifying Breakout Structures...")
+        progress_text.markdown("#### ⏳ Building Multi-Timeframe Candles & Validating Structures...")
         
-        if timeframe == "1mo": period_val, interval_val = "max", "1mo"
-        elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
-        elif timeframe == "1d": period_val, interval_val = "3y", "1d"
-        else: period_val, interval_val = "60d", "15m"
+        # LOGIC UPDATE: Handle Macro Fetching Properly
+        if timeframe in ["1mo", "3mo"]: 
+            period_val, interval_val = "max", "1mo"
+        elif timeframe == "1wk": 
+            period_val, interval_val = "10y", "1wk"
+        elif timeframe == "1d": 
+            period_val, interval_val = "3y", "1d"
+        else: 
+            period_val, interval_val = "60d", "15m"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
@@ -264,7 +288,12 @@ if st.button("🔥 RUN MASTER SCANNER", type="primary"):
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 if not df.empty:
-                    if timeframe == '75m': df = resample_to_75m(df)
+                    # Apply specific resampling rules
+                    if timeframe == '75m': 
+                        df = resample_to_75m(df)
+                    elif timeframe == '3mo': 
+                        df = resample_custom_months(df, 3)
+                        
                     setup = scan_master_zones(df, is_bull)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
@@ -276,15 +305,15 @@ if st.button("🔥 RUN MASTER SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} perfect assets. Sideways chop and weak breakouts have been eliminated.")
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Breakout', 'Volume', 'Trend', 'Live Price', 'Entry', 'Stop Loss']]
+            st.success(f"Isolated {len(results)} perfect assets matching the required timeframe parameters.")
+            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Breakout', 'Volume', 'Macro Filter', 'Live Price', 'Entry', 'Stop Loss']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Setup'])\
               .map(lambda v: 'color: #4FACFE; font-weight: 800;', subset=['Breakout'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Volume', 'Trend'])
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Volume', 'Macro Filter'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. The volume, slope, and absolute structural breakout requirements are incredibly strict today.")
+            st.error("0 MATCHES. The structural breakout and macroeconomic volume parameters are incredibly strict today.")
