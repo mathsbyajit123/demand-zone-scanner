@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="50 SMA Trend Scanner", layout="wide")
+st.set_page_config(page_title="50 SMA + GTF Hybrid Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">50 SMA MACRO TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Open Ceiling Tracking | Locked Downside (Max 1% Below 50 SMA)</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">50 SMA + GTF HYBRID TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">1-3 Base Zone Tracking | 50 SMA Macro Filter | Fresh Pullback Entries</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -63,8 +63,7 @@ with st.sidebar:
     timeframe = tf_options[tf_label]
     
     st.divider()
-    st.markdown("### **SCANNER RULES**")
-    st.info("Tracks live price anywhere ABOVE the 50 SMA. The downside is strictly locked at a maximum of 1% below the SMA to filter out broken trends.")
+    direction = st.radio("Trend Direction", ("🟢 Demand (Above 50 SMA)", "🔴 Supply (Below 50 SMA)"))
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -126,47 +125,138 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. SMA MATHEMATICS ENGINE (OPEN CEILING)
+# 4. HYBRID SMA & GTF ENGINE
 # ==========================================
-def scan_sma_proximity(df):
-    if len(df) < 55: return None 
+def analyze_gtf_candles(df):
+    df['Range'] = df['High'] - df['Low']
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
     
-    # Calculate 50 SIMPLE Moving Average
+    # Using 55% as the Base Candle threshold to mimic human visual analysis
+    conditions = [
+        (df['Body_Pct'] > 55) & (df['Close'] > df['Open']),  
+        (df['Body_Pct'] > 55) & (df['Close'] < df['Open']),  
+        (df['Body_Pct'] <= 55)                               
+    ]
+    choices = ['Green Exciting', 'Red Exciting', 'Base']
+    df['GTF_Type'] = np.select(conditions, choices, default='Unknown')
+    return df
+
+def scan_hybrid_zones(df, is_bullish):
+    if len(df) < 55: return None
+    
+    # Calculate Macro Trend 50 SMA
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     
-    c = df.iloc[-1]
-    live_price = c['Close']
-    sma_50 = c['SMA_50']
+    df = analyze_gtf_candles(df)
     
-    # strictly lock the downside to maximum -1% below SMA
-    lower_bound = sma_50 * 0.99
+    search_df = df.tail(300) 
+    last_idx = len(search_df) - 1
+    today_candle = search_df.iloc[last_idx]
+    live_price = today_candle['Close']
+    current_50_sma = today_candle['SMA_50']
     
-    # As long as price is >= the lower bound, it passes (no upper ceiling)
-    if live_price >= lower_bound:
-        # Calculate exact distance percentage
-        distance_pct = ((live_price - sma_50) / sma_50) * 100
+    # ==========================================
+    # 50 SMA MACRO TREND FILTER
+    # ==========================================
+    if is_bullish and live_price <= current_50_sma:
+        return None # Must be ABOVE 50 SMA for Demand
+    elif not is_bullish and live_price >= current_50_sma:
+        return None # Must be BELOW 50 SMA for Supply
         
-        if distance_pct > 0:
-            status = f"✅ +{round(distance_pct, 2)}% Above"
-        elif distance_pct < 0:
-            status = f"⚠️ {round(distance_pct, 2)}% Below"
-        else:
-            status = "🎯 EXACT MATCH"
+    for i in range(1, last_idx - 1):
+        leg_in = search_df.iloc[i-1]
+        
+        # Must start with an exciting Leg-In candle
+        if leg_in['GTF_Type'] == 'Base': continue 
+        
+        base_count = 0
+        leg_out_idx = None
+        
+        # Scan forward for 1 to 3 base candles
+        for j in range(i, min(i + 5, last_idx)):
+            curr = search_df.iloc[j]
+            if curr['GTF_Type'] == 'Base':
+                base_count += 1
+            else:
+                leg_out_idx = j
+                break
+                
+        # Must be exactly 1 to 3 bases
+        if base_count == 0 or base_count > 3: continue 
+        if leg_out_idx is None or leg_out_idx >= last_idx: continue
+        
+        base_candles = search_df.iloc[i : leg_out_idx]
+        leg_out = search_df.iloc[leg_out_idx]
+        
+        pattern = None
+        
+        # ==========================================
+        # STRUCTURAL VALIDATION (CLOSE > LEG-IN)
+        # ==========================================
+        if is_bullish:
+            # Leg Out must close strictly ABOVE Leg In high
+            if leg_out['GTF_Type'] == 'Green Exciting' and leg_out['Close'] > leg_in['High']:
+                proximal = max(base_candles['Open'].max(), base_candles['Close'].max())
+                distal = base_candles['Low'].min()
+                pattern = 'DBR' if leg_in['GTF_Type'] == 'Red Exciting' else 'RBR'
 
-        return {
-            "Setup": "🔵 50 SMA Filter",
-            "Live Price": round(live_price, 2),
-            "50 SMA Level": round(sma_50, 2),
-            "Distance": status,
-            "Action": "🔎 UPTREND VALIDATED"
-        }
+        elif not is_bullish:
+            # Leg Out must close strictly BELOW Leg In low
+            if leg_out['GTF_Type'] == 'Red Exciting' and leg_out['Close'] < leg_in['Low']:
+                proximal = min(base_candles['Open'].min(), base_candles['Close'].min())
+                distal = base_candles['High'].max()
+                pattern = 'RBD' if leg_in['GTF_Type'] == 'Green Exciting' else 'DBD'
+                
+        if not pattern: continue
         
+        # ==========================================
+        # FRESHNESS VALIDATION
+        # ==========================================
+        future_data = search_df.iloc[leg_out_idx + 1 : last_idx]
+        is_tested = False
+        
+        if not future_data.empty:
+            for _, past_candle in future_data.iterrows():
+                if is_bullish:
+                    if past_candle['Low'] <= proximal: is_tested = True
+                else:
+                    if past_candle['High'] >= proximal: is_tested = True
+                    
+        if is_tested: continue
+        
+        # ==========================================
+        # ACTIVE TOUCH TRIGGER (TODAY)
+        # ==========================================
+        trading_at_zone = False
+        
+        if is_bullish:
+            if today_candle['Low'] <= (proximal * 1.025) and live_price >= distal: 
+                trading_at_zone = True
+        else:
+            if today_candle['High'] >= (proximal * 0.975) and live_price <= distal:
+                trading_at_zone = True
+        
+        if trading_at_zone:
+            distance_to_sma = round(((live_price - current_50_sma) / current_50_sma) * 100, 2)
+            
+            return {
+                "GTF Setup": f"🟢 {pattern}" if is_bullish else f"🔴 {pattern}",
+                "Structure": f"{base_count} Base Candles",
+                "50 SMA Alignment": f"✅ +{distance_to_sma}% Above SMA" if is_bullish else f"✅ {distance_to_sma}% Below SMA",
+                "Live Price": round(live_price, 2),
+                "Entry (Prox)": round(proximal, 2),
+                "SL (Distal)": round(distal, 2),
+                "Action": "🎯 TRADE HYBRID SETUP"
+            }
+            
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
+if st.button("🔥 RUN HYBRID SMA SCANNER", type="primary"):
+    is_bull = "Demand" in direction
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -174,31 +264,31 @@ if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>50 SMA (OPEN CEILING)</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>VECTOR</span><h2>{'LONG' if is_bull else 'SHORT'}</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Calculating 50 SMA and Validating Trends...")
+        progress_text.markdown("#### ⏳ Filtering by 50 SMA & Verifying 1-3 Base Structures...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
-        elif timeframe == "1wk": period_val, interval_val = "5y", "1wk"
-        elif timeframe == "1d": period_val, interval_val = "2y", "1d"
+        elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
+        elif timeframe == "1d": period_val, interval_val = "3y", "1d"
         else: period_val, interval_val = "60d", "15m"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Checking Levels: {i + 1} / {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Analyzing Price Action {i + 1} out of {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = scan_sma_proximity(df)
+                    setup = scan_hybrid_zones(df, is_bull)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -209,18 +299,16 @@ if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets holding above the strict 50 SMA (-1%) floor.")
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', '50 SMA Level', 'Distance', 'Action']]
-            
-            # Sort by distance (descending) so highest runners are at the top, down to the -1% floor
-            final_df = final_df.sort_values(by="Distance", ascending=False)
+            st.success(f"Isolated {len(results)} assets showing a fresh GTF zone actively aligned with the 50 SMA.")
+            final_df = pd.DataFrame(results)[['Asset', 'GTF Setup', 'Structure', '50 SMA Alignment', 'Live Price', 'Entry (Prox)', 'SL (Distal)', 'Action']]
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
-            }).map(lambda v: 'color: #00F2FE; font-weight: 800;', subset=['Setup'])\
-              .map(lambda v: 'color: #00FF00; font-weight: 800;' if '+' in str(v) else ('color: #FF4500; font-weight: 800;' if '-' in str(v) else 'color: #F6D365; font-weight: 900;'), subset=['Distance'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 900;', subset=['Action'])
+            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['GTF Setup'])\
+              .map(lambda v: 'color: #4FACFE; font-weight: 800;', subset=['50 SMA Alignment'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Structure'])\
+              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. No stocks are currently holding above the -1% threshold of the 50 SMA.")
+            st.error("0 MATCHES. The Hybrid Filter is incredibly strict. No fresh 1-3 Base zones are currently aligned with the 50 SMA today.")
