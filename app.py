@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="EMA & RSI DVG Scanner", layout="wide")
+st.set_page_config(page_title="50 SMA Proximity Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">EMA & RSI DIVERGENCE TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Strict Close BOS | Hidden & Regular RSI DVG Integration | Dual EMA Engines</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">50 SMA PROXIMITY TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Strict Simple Moving Average (SMA) Tracking | -1% to +5% Action Zone</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -63,19 +63,8 @@ with st.sidebar:
     timeframe = tf_options[tf_label]
     
     st.divider()
-    st.markdown("### **SCANNER CONFIGURATION**")
-    direction = st.radio("Trend Direction", ("🟢 Bullish (Uptrends)", "🔴 Bearish (Downtrends)"))
-    
-    st.write("")
-    st.markdown("**Target EMA Option**")
-    target_setup = st.radio("Select Strategy Engine", [
-        "🔵 Option 1: 20 & 50 EMA Range (Strict BOS)",
-        "🟣 Option 2: 200 EMA Support / Resistance"
-    ], label_visibility="collapsed")
-    
-    st.divider()
-    st.markdown("### **RSI DVG CONTROLS**")
-    require_dvg = st.checkbox("Require RSI Divergence (Strict Lock)", value=False, help="If checked, only setups with confirmed Hidden or Regular RSI Divergence will be shown.")
+    st.markdown("### **SCANNER RULES**")
+    st.info("Tracks live price strictly between -1% below the 50 SMA and +5% above it. Filters out overextended breakouts.")
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -137,153 +126,47 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. MATH ENGINE: EMA + BOS + RSI DVG
+# 4. SMA MATHEMATICS ENGINE
 # ==========================================
-def calculate_ema_angle(ema_series):
-    try:
-        y1 = ema_series.iloc[-4] 
-        y2 = ema_series.iloc[-1] 
-        roc_pct = ((y2 - y1) / y1) * 100 
-        angle = np.degrees(np.arctan(roc_pct * 5)) 
-        return round(angle, 1)
-    except: return 0
-
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
-    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def check_rsi_divergence(df, is_bullish):
-    if len(df) < 35: return "No DVG"
+def scan_sma_proximity(df):
+    if len(df) < 55: return None 
     
-    recent_price_low = df['Low'].iloc[-15:-1].min()
-    prior_price_low = df['Low'].iloc[-30:-15].min()
-    recent_rsi_low = df['RSI'].iloc[-15:-1].min()
-    prior_rsi_low = df['RSI'].iloc[-30:-15].min()
-    
-    recent_price_high = df['High'].iloc[-15:-1].max()
-    prior_price_high = df['High'].iloc[-30:-15].max()
-    recent_rsi_high = df['RSI'].iloc[-15:-1].max()
-    prior_rsi_high = df['RSI'].iloc[-30:-15].max()
-    
-    if is_bullish:
-        if recent_price_low < prior_price_low and recent_rsi_low > prior_rsi_low:
-            return "✅ Regular Bull DVG"
-        elif recent_price_low > prior_price_low and recent_rsi_low < prior_rsi_low:
-            return "⚡ Hidden Bull DVG"
-    else:
-        if recent_price_high > prior_price_high and recent_rsi_high < prior_rsi_high:
-            return "✅ Regular Bear DVG"
-        elif recent_price_high < prior_price_high and recent_rsi_high > prior_rsi_high:
-            return "⚡ Hidden Bear DVG"
-            
-    return "No DVG"
-
-def scan_integrated_engine(df, is_bullish, target_setup, require_dvg):
-    if len(df) < 205: return None 
-    
-    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    df['RSI'] = calculate_rsi(df['Close'], 14)
+    # Calculate 50 SIMPLE Moving Average
+    df['SMA_50'] = df['Close'].rolling(window=50).mean()
     
     c = df.iloc[-1]
     live_price = c['Close']
-    dvg_status = check_rsi_divergence(df, is_bullish)
+    sma_50 = c['SMA_50']
     
-    if require_dvg and "DVG" not in dvg_status: return None
+    # Define Proximity Bounds (-1% to +5%)
+    lower_bound = sma_50 * 0.99
+    upper_bound = sma_50 * 1.05
     
-    # ==========================================
-    # BULLISH LOGIC
-    # ==========================================
-    if is_bullish:
-        if "Option 1" in target_setup:
-            if not (c['EMA_20'] > c['EMA_50'] > c['EMA_200']): return None
-            
-            angle = calculate_ema_angle(df['EMA_50'])
-            if angle <= 0: return None 
-            
-            prior_peak_high = df['High'].iloc[-40:-20].max()
-            recent_closes = df['Close'].iloc[-20:-1]
-            if not (recent_closes > prior_peak_high).any(): return None 
-            
-            if c['EMA_50'] <= live_price <= c['EMA_20']:
-                return {
-                    "Setup": "🟢 Bull 20-50 Range",
-                    "BOS Check": "✅ Body Closed High",
-                    "RSI DVG": dvg_status,
-                    "Live Price": round(live_price, 2),
-                    "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
-                    "Status": "🎯 BUY THE RANGE"
-                }
+    if lower_bound <= live_price <= upper_bound:
+        # Calculate exact distance percentage
+        distance_pct = ((live_price - sma_50) / sma_50) * 100
+        
+        if distance_pct > 0:
+            status = f"✅ +{round(distance_pct, 2)}% Above"
+        elif distance_pct < 0:
+            status = f"⚠️ {round(distance_pct, 2)}% Below"
+        else:
+            status = "🎯 EXACT MATCH"
 
-        elif "Option 2" in target_setup:
-            if c['EMA_50'] <= c['EMA_200']: return None
-            
-            angle = calculate_ema_angle(df['EMA_200'])
-            if angle <= 0: return None 
-            
-            if c['EMA_200'] <= live_price <= (c['EMA_200'] * 1.05):
-                distance = round(((live_price - c['EMA_200']) / c['EMA_200']) * 100, 2)
-                return {
-                    "Setup": "🟢 Bull 200 Support",
-                    "BOS Check": "N/A (200 Setup)",
-                    "RSI DVG": dvg_status,
-                    "Live Price": round(live_price, 2),
-                    "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
-                    "Status": f"🎯 BUY SUPPORT (+{distance}%)"
-                }
-
-    # ==========================================
-    # BEARISH LOGIC
-    # ==========================================
-    elif not is_bullish:
-        if "Option 1" in target_setup:
-            if not (c['EMA_20'] < c['EMA_50'] < c['EMA_200']): return None
-            
-            angle = calculate_ema_angle(df['EMA_50'])
-            if angle >= 0: return None 
-            
-            prior_trough_low = df['Low'].iloc[-40:-20].min()
-            recent_closes = df['Close'].iloc[-20:-1]
-            if not (recent_closes < prior_trough_low).any(): return None 
-            
-            if c['EMA_20'] <= live_price <= c['EMA_50']:
-                return {
-                    "Setup": "🔴 Bear 20-50 Range",
-                    "BOS Check": "✅ Body Closed Low",
-                    "RSI DVG": dvg_status,
-                    "Live Price": round(live_price, 2),
-                    "Action Zone": f"E20: {round(c['EMA_20'], 2)} | E50: {round(c['EMA_50'], 2)}",
-                    "Status": "🎯 SELL THE RANGE"
-                }
-
-        elif "Option 2" in target_setup:
-            if c['EMA_50'] >= c['EMA_200']: return None
-            
-            angle = calculate_ema_angle(df['EMA_200'])
-            if angle >= 0: return None 
-            
-            if (c['EMA_200'] * 0.95) <= live_price <= c['EMA_200']:
-                distance = round(((c['EMA_200'] - live_price) / c['EMA_200']) * 100, 2)
-                return {
-                    "Setup": "🔴 Bear 200 Resistance",
-                    "BOS Check": "N/A (200 Setup)",
-                    "RSI DVG": dvg_status,
-                    "Live Price": round(live_price, 2),
-                    "Action Zone": f"E200: {round(c['EMA_200'], 2)}",
-                    "Status": f"🎯 SELL RESISTANCE (-{distance}%)"
-                }
-
+        return {
+            "Setup": "🔵 50 SMA Proximity",
+            "Live Price": round(live_price, 2),
+            "50 SMA Level": round(sma_50, 2),
+            "Distance": status,
+            "Action": "🔎 WATCH FOR BOUNCE"
+        }
+        
     return None
 
 # ==========================================
 # 5. EXECUTION & DYNAMIC PROGRESS
 # ==========================================
-if st.button("🔥 RUN INTEGRATED SCANNER", type="primary"):
-    is_bull = "Bullish" in direction
+if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
     ticker_list = get_index_tickers(selected_sector)
     total_stocks = len(ticker_list)
     
@@ -291,33 +174,31 @@ if st.button("🔥 RUN INTEGRATED SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        
-        mode_label = "20-50 BOS + RSI" if "Option 1" in target_setup else "200 EMA + RSI"
-        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>{mode_label}</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>50 SMA (SIMPLE)</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Mapping EMA Vectors & Calculating RSI Divergences...")
+        progress_text.markdown("#### ⏳ Calculating 50 SMA and Measuring Proximity...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
-        elif timeframe == "1wk": period_val, interval_val = "10y", "1wk"
-        elif timeframe == "1d": period_val, interval_val = "3y", "1d"
+        elif timeframe == "1wk": period_val, interval_val = "5y", "1wk"
+        elif timeframe == "1d": period_val, interval_val = "2y", "1d"
         else: period_val, interval_val = "60d", "15m"
         
         market_data = yf.download(" ".join(ticker_list), period=period_val, interval=interval_val, group_by='ticker', threads=True, progress=False)
         
         results = []
         for i, ticker in enumerate(ticker_list):
-            progress_text.markdown(f"#### 🔍 Checking Institutional DVG: {i + 1} / {total_stocks} ({ticker.replace('.NS', '')})")
+            progress_text.markdown(f"#### 🔍 Checking Levels: {i + 1} / {total_stocks} ({ticker.replace('.NS', '')})")
             progress_bar.progress((i + 1) / total_stocks)
             try:
                 df = market_data[ticker].dropna() if total_stocks > 1 else market_data.dropna()
                 if not df.empty:
                     if timeframe == '75m': df = resample_to_75m(df)
-                    setup = scan_integrated_engine(df, is_bull, target_setup, require_dvg)
+                    setup = scan_sma_proximity(df)
                     if setup:
                         setup['Asset'] = ticker.replace(".NS", "")
                         results.append(setup)
@@ -328,16 +209,16 @@ if st.button("🔥 RUN INTEGRATED SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets. BOS & RSI DVG processing complete.")
-            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'BOS Check', 'RSI DVG', 'Live Price', 'Action Zone', 'Status']]
+            st.success(f"Isolated {len(results)} assets trading exactly in the 50 SMA pocket (-1% to +5%).")
+            final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', '50 SMA Level', 'Distance', 'Action']]
+            final_df = final_df.sort_values(by="Distance", ascending=True)
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
-            }).map(lambda v: 'color: #00FF00; font-weight: 800;' if '🟢' in str(v) else ('color: #FF0000; font-weight: 800;' if '🔴' in str(v) else ''), subset=['Setup'])\
-              .map(lambda v: 'color: #4FACFE; font-weight: 800;' if '✅' in str(v) else 'color: #64748B;', subset=['BOS Check'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;' if 'DVG' in str(v) else 'color: #64748B;', subset=['RSI DVG'])\
-              .map(lambda v: 'color: #00F2FE; font-weight: 900;', subset=['Status'])
+            }).map(lambda v: 'color: #00F2FE; font-weight: 800;', subset=['Setup'])\
+              .map(lambda v: 'color: #00FF00; font-weight: 800;' if '+' in str(v) else ('color: #FF4500; font-weight: 800;' if '-' in str(v) else 'color: #F6D365; font-weight: 900;'), subset=['Distance'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 900;', subset=['Action'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error(f"0 MATCHES. No stocks currently satisfy the logic for the selected options.")
+            st.error("0 MATCHES. No stocks are currently hovering in the strict -1% to +5% boundary of the 50 SMA.")
