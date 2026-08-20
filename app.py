@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI & STYLING
 # ==========================================
-st.set_page_config(page_title="50 SMA Proximity Scanner", layout="wide")
+st.set_page_config(page_title="50 SMA Trend Scanner", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,8 +39,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">50 SMA PROXIMITY TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Strict Simple Moving Average (SMA) Tracking | -1% to +5% Action Zone</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">50 SMA MACRO TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">Open Ceiling Tracking | Locked Downside (Max 1% Below 50 SMA)</p>', unsafe_allow_html=True)
 
 # ==========================================
 # 2. COMMAND CENTER
@@ -64,7 +64,7 @@ with st.sidebar:
     
     st.divider()
     st.markdown("### **SCANNER RULES**")
-    st.info("Tracks live price strictly between -1% below the 50 SMA and +5% above it. Filters out overextended breakouts.")
+    st.info("Tracks live price anywhere ABOVE the 50 SMA. The downside is strictly locked at a maximum of 1% below the SMA to filter out broken trends.")
 
 # ==========================================
 # 3. FIXED NSE DATA ROUTER
@@ -126,7 +126,7 @@ def resample_to_75m(df):
     return df.resample('75min', offset='15min').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
 
 # ==========================================
-# 4. SMA MATHEMATICS ENGINE
+# 4. SMA MATHEMATICS ENGINE (OPEN CEILING)
 # ==========================================
 def scan_sma_proximity(df):
     if len(df) < 55: return None 
@@ -138,11 +138,11 @@ def scan_sma_proximity(df):
     live_price = c['Close']
     sma_50 = c['SMA_50']
     
-    # Define Proximity Bounds (-1% to +5%)
+    # strictly lock the downside to maximum -1% below SMA
     lower_bound = sma_50 * 0.99
-    upper_bound = sma_50 * 1.05
     
-    if lower_bound <= live_price <= upper_bound:
+    # As long as price is >= the lower bound, it passes (no upper ceiling)
+    if live_price >= lower_bound:
         # Calculate exact distance percentage
         distance_pct = ((live_price - sma_50) / sma_50) * 100
         
@@ -154,11 +154,11 @@ def scan_sma_proximity(df):
             status = "🎯 EXACT MATCH"
 
         return {
-            "Setup": "🔵 50 SMA Proximity",
+            "Setup": "🔵 50 SMA Filter",
             "Live Price": round(live_price, 2),
             "50 SMA Level": round(sma_50, 2),
             "Distance": status,
-            "Action": "🔎 WATCH FOR BOUNCE"
+            "Action": "🔎 UPTREND VALIDATED"
         }
         
     return None
@@ -174,14 +174,14 @@ if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1: st.markdown(f"<div class='metric-box'><span>UNIVERSE</span><h2>{selected_sector}</h2></div>", unsafe_allow_html=True)
         with col2: st.markdown(f"<div class='metric-box'><span>RESOLUTION</span><h2>{tf_label}</h2></div>", unsafe_allow_html=True)
-        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>50 SMA (SIMPLE)</h2></div>", unsafe_allow_html=True)
+        with col3: st.markdown(f"<div class='metric-box'><span>MODE</span><h2>50 SMA (OPEN CEILING)</h2></div>", unsafe_allow_html=True)
 
         st.write("")
         
         progress_text = st.empty()
         progress_bar = st.progress(0)
         
-        progress_text.markdown("#### ⏳ Calculating 50 SMA and Measuring Proximity...")
+        progress_text.markdown("#### ⏳ Calculating 50 SMA and Validating Trends...")
         
         if timeframe == "1mo": period_val, interval_val = "max", "1mo"
         elif timeframe == "1wk": period_val, interval_val = "5y", "1wk"
@@ -209,9 +209,11 @@ if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
         st.divider()
         
         if results:
-            st.success(f"Isolated {len(results)} assets trading exactly in the 50 SMA pocket (-1% to +5%).")
+            st.success(f"Isolated {len(results)} assets holding above the strict 50 SMA (-1%) floor.")
             final_df = pd.DataFrame(results)[['Asset', 'Setup', 'Live Price', '50 SMA Level', 'Distance', 'Action']]
-            final_df = final_df.sort_values(by="Distance", ascending=True)
+            
+            # Sort by distance (descending) so highest runners are at the top, down to the -1% floor
+            final_df = final_df.sort_values(by="Distance", ascending=False)
             
             styled = final_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
@@ -221,4 +223,4 @@ if st.button("🔥 RUN 50 SMA SCANNER", type="primary"):
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error("0 MATCHES. No stocks are currently hovering in the strict -1% to +5% boundary of the 50 SMA.")
+            st.error("0 MATCHES. No stocks are currently holding above the -1% threshold of the 50 SMA.")
