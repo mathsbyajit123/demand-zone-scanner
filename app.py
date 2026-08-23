@@ -11,13 +11,13 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # 1. UI CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="RSI Divergence Terminal", layout="wide")
+st.set_page_config(page_title="Master Institutional Terminal", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #090B10; color: #E2E8F0; }
     .gradient-text {
-        font-weight: 900; font-size: 34px; letter-spacing: -1px;
+        font-weight: 900; font-size: 32px; letter-spacing: -1px;
         background: -webkit-linear-gradient(45deg, #00F2FE, #4FACFE, #F6D365);
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; padding-bottom: 0px; text-transform: uppercase;
@@ -32,23 +32,34 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="gradient-text">RSI DIVERGENCE TERMINAL</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-text">Regular & Hidden Divergence | Multi-Timeframe | Broad Market Scanning</p>', unsafe_allow_html=True)
+st.markdown('<p class="gradient-text">MASTER INSTITUTIONAL TERMINAL</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-text">GTF Zones | S/D Flips | RSI Divergence (High Market Cap Universe)</p>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. COMMAND CENTER (SIDEBAR)
+# 2. SIDEBAR CONTROLS
 # ==========================================
 with st.sidebar:
-    st.markdown("### **1. MARKET UNIVERSE**")
+    st.markdown("### **1. STRATEGY ENGINE**")
+    strategy = st.selectbox(
+        "Select Trading Engine:",
+        [
+            "1. Pure GTF + 50 SMA (Pullbacks)",
+            "2. Supply/Demand Flip (Breaker)",
+            "3. RSI Divergence (Regular & Hidden)"
+        ]
+    )
+    
+    st.divider()
+    st.markdown("### **2. MARKET UNIVERSE (>₹5000 Cr)**")
+    
     universe_choice = st.selectbox(
-        "Choose Stock Source:",
+        "Choose NSE List:",
         [
             "Nifty 500 (Broad Market)", 
             "Nifty MidSmallcap 400", 
             "Nifty Smallcap 250",
             "Nifty Midcap 150",
             "Nifty 50",
-            "F&O Universe (~242)",
             "Custom Tickers"
         ]
     )
@@ -58,22 +69,23 @@ with st.sidebar:
         custom_pasted = st.text_area("Paste Symbols (comma-separated):", "RELIANCE, TCS, HDFCBANK")
         
     st.divider()
-    st.markdown("### **2. TIMEFRAME & VECTOR**")
+    st.markdown("### **3. TIMEFRAME & BIAS**")
     tf_options = {
-        "15 Min": "15m",
-        "75 Min": "75m",
+        "15 Min": "15m", 
+        "75 Min": "75m", 
         "1 Day": "1d", 
         "1 Week": "1wk", 
-        "1 Month": "1mo"
+        "1 Month": "1mo", 
+        "3 Month": "3mo"
     }
     tf_label = st.selectbox("Resolution:", list(tf_options.keys()), index=2)
     timeframe = tf_options[tf_label]
     
-    direction = st.radio("Trend Bias:", ("🟢 Bullish (Long Setups)", "🔴 Bearish (Short Setups)"))
+    direction = st.radio("Market Bias:", ("🟢 Bullish (Demand/Long)", "🔴 Bearish (Supply/Short)"))
     is_bullish = "Bullish" in direction
 
 # ==========================================
-# 3. FAST UNIVERSE PARSER
+# 3. ROBUST UNIVERSE PARSER (NSE ARCHIVES)
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_nse_list(index_name):
@@ -86,7 +98,10 @@ def load_nse_list(index_name):
     }
     
     url = urls.get(index_name)
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
     
     if url:
         try:
@@ -97,20 +112,39 @@ def load_nse_list(index_name):
         except Exception:
             pass
             
-    # Fallback to standard highly liquid F&O list if NSE site fails
-    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "MARUTI.NS", "TATAMOTORS.NS"]
+    # Hard fallback to top 20 liquidity if NSE blocks the API
+    return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "LT.NS", "HINDUNILVR.NS", "BAJFINANCE.NS", "AXISBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "KOTAKBANK.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS"]
 
 def get_target_tickers():
     if universe_choice == "Custom Tickers":
         return [f"{t.strip().upper()}.NS" if not t.strip().upper().endswith(".NS") else t.strip().upper() for t in custom_pasted.split(",") if t.strip()]
-    elif universe_choice == "F&O Universe (~242)":
-        return ["AARTIIND.NS", "ABB.NS", "ABBOTINDIA.NS", "ABCAPITAL.NS", "ACC.NS", "ADANIENT.NS", "ADANIPORTS.NS", "ASHOKLEY.NS", "ASIANPAINT.NS", "AXISBANK.NS", "BAJAJ-AUTO.NS", "BAJFINANCE.NS", "BANDHANBNK.NS", "BANKBARODA.NS", "BHEL.NS", "BIOCON.NS", "BPCL.NS", "BRITANNIA.NS", "CANBK.NS", "CHOLAFIN.NS", "CIPLA.NS", "COALINDIA.NS", "DABUR.NS", "DIVISLAB.NS", "DLF.NS", "DRREDDY.NS", "EICHERMOT.NS", "FEDERALBNK.NS", "GAIL.NS", "GODREJCP.NS", "GRASIM.NS", "HAL.NS", "HAVELLS.NS", "HEROMOTOCO.NS", "HINDALCO.NS", "IGL.NS", "INDIGO.NS", "INDUSINDBK.NS", "JSWSTEEL.NS", "M&M.NS", "MUTHOOTFIN.NS", "NMDC.NS", "PFC.NS", "PNB.NS", "POWERGRID.NS", "RECLTD.NS", "SAIL.NS", "SIEMENS.NS", "TATAPOWER.NS", "TITAN.NS", "TVSMOTOR.NS", "ULTRACEMCO.NS", "VEDL.NS", "WIPRO.NS", "ZOMATO.NS"]
     else:
         return load_nse_list(universe_choice)
 
 # ==========================================
-# 4. MATHEMATICS & RSI ENGINE
+# 4. MATH & RESAMPLING ENGINES
 # ==========================================
+def resample_custom(df, tf_rule):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    # '75min' for intraday, '3ME' for quarterly
+    return df.resample(tf_rule, offset='15min' if tf_rule=='75min' else None).agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna()
+
+def analyze_candles(df):
+    df['Range'] = df['High'] - df['Low']
+    df['Body'] = abs(df['Close'] - df['Open'])
+    df['Body_Pct'] = np.where(df['Range'] == 0, 0, (df['Body'] / df['Range']) * 100)
+    
+    conditions = [
+        (df['Body_Pct'] > 50) & (df['Close'] > df['Open']),
+        (df['Body_Pct'] > 50) & (df['Close'] < df['Open']),
+        (df['Body_Pct'] <= 50)
+    ]
+    df['Candle_Type'] = np.select(conditions, ['Green Exciting', 'Red Exciting', 'Base'], default='Base')
+    return df
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
@@ -118,95 +152,178 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def check_rsi_divergence(df, is_bull):
-    if len(df) < 45: return None
+# --- ENGINE 1: GTF PULLBACKS ---
+def run_gtf_sma_scan(df, is_bull):
+    if len(df) < 55: return None
+    df['SMA_50'] = df['Close'].rolling(50).mean()
+    df = analyze_candles(df)
+    
+    last_idx = len(df) - 1
+    live_price = float(df['Close'].iloc[-1])
+    sma = float(df['SMA_50'].iloc[-1])
+    
+    if pd.isna(sma): return None
+    if is_bull and live_price <= sma: return None
+    if not is_bull and live_price >= sma: return None
+    
+    for i in range(last_idx - 1, 1, -1):
+        leg_out = df.iloc[i]
+        expected = 'Green Exciting' if is_bull else 'Red Exciting'
+        if leg_out['Candle_Type'] != expected: continue
+        
+        base_cnt = 0
+        leg_in_idx = None
+        for j in range(i-1, max(-1, i-5), -1):
+            if df.iloc[j]['Candle_Type'] == 'Base': base_cnt += 1
+            else:
+                leg_in_idx = j
+                break
+                
+        if base_cnt == 0 or base_cnt > 3 or leg_in_idx is None: continue
+        bases = df.iloc[leg_in_idx+1 : i]
+        
+        if is_bull and leg_out['Close'] > bases['High'].max():
+            prox = float(max(bases['Open'].max(), bases['Close'].max()))
+            dist = float(bases['Low'].min())
+            future = df.iloc[i+1 : last_idx]
+            if not future.empty and (future['Low'] <= prox).any(): break
+            
+            # Allow a buffer to catch it as it enters the zone
+            if df['Low'].iloc[-1] <= (prox * 1.015) and live_price >= dist:
+                return {"Setup": "GTF + 50 SMA Pullback", "Entry": round(prox, 2), "SL": round(dist, 2), "Price": round(live_price, 2), "Detail": f"{base_cnt} Base Candle(s)"}
+                
+        elif not is_bull and leg_out['Close'] < bases['Low'].min():
+            prox = float(min(bases['Open'].min(), bases['Close'].min()))
+            dist = float(bases['High'].max())
+            future = df.iloc[i+1 : last_idx]
+            if not future.empty and (future['High'] >= prox).any(): break
+            
+            if df['High'].iloc[-1] >= (prox * 0.985) and live_price <= dist:
+                return {"Setup": "GTF + 50 SMA Pullback", "Entry": round(prox, 2), "SL": round(dist, 2), "Price": round(live_price, 2), "Detail": f"{base_cnt} Base Candle(s)"}
+    return None
+
+# --- ENGINE 2: S/D FLIPS ---
+def run_flip_scan(df, is_bull):
+    if len(df) < 50: return None
+    df = analyze_candles(df)
+    last_idx = len(df) - 1
+    live_price = float(df['Close'].iloc[-1])
+    
+    for i in range(last_idx - 1, 15, -1):
+        leg_out = df.iloc[i]
+        if is_bull and leg_out['Candle_Type'] == 'Green Exciting':
+            base_cnt = 0
+            leg_in_idx = None
+            for j in range(i-1, max(-1, i-5), -1):
+                if df.iloc[j]['Candle_Type'] == 'Base': base_cnt += 1
+                else:
+                    leg_in_idx = j
+                    break
+            if base_cnt == 0 or base_cnt > 3 or leg_in_idx is None: continue
+            
+            bases = df.iloc[leg_in_idx+1 : i]
+            old_supply_high = float(df['High'].iloc[leg_in_idx-15 : leg_in_idx].max())
+            
+            if leg_out['Close'] > old_supply_high:
+                prox = float(max(bases['Open'].max(), bases['Close'].max()))
+                dist = float(bases['Low'].min())
+                future = df.iloc[i+1 : last_idx]
+                if not future.empty and (future['Low'] <= prox).any(): break
+                if df['Low'].iloc[-1] <= (prox * 1.02) and live_price >= dist:
+                    return {"Setup": "Demand Flip (BOS)", "Entry": round(prox, 2), "SL": round(dist, 2), "Price": round(live_price, 2), "Detail": f"Broke Supply ₹{round(old_supply_high,1)}"}
+                    
+        elif not is_bull and leg_out['Candle_Type'] == 'Red Exciting':
+            base_cnt = 0
+            leg_in_idx = None
+            for j in range(i-1, max(-1, i-5), -1):
+                if df.iloc[j]['Candle_Type'] == 'Base': base_cnt += 1
+                else:
+                    leg_in_idx = j
+                    break
+            if base_cnt == 0 or base_cnt > 3 or leg_in_idx is None: continue
+            
+            bases = df.iloc[leg_in_idx+1 : i]
+            old_demand_low = float(df['Low'].iloc[leg_in_idx-15 : leg_in_idx].min())
+            
+            if leg_out['Close'] < old_demand_low:
+                prox = float(min(bases['Open'].min(), bases['Close'].min()))
+                dist = float(bases['High'].max())
+                future = df.iloc[i+1 : last_idx]
+                if not future.empty and (future['High'] >= prox).any(): break
+                if df['High'].iloc[-1] >= (prox * 0.98) and live_price <= dist:
+                    return {"Setup": "Supply Flip (BOS)", "Entry": round(prox, 2), "SL": round(dist, 2), "Price": round(live_price, 2), "Detail": f"Broke Demand ₹{round(old_demand_low,1)}"}
+    return None
+
+# --- ENGINE 3: RSI DIVERGENCE ---
+def run_rsi_divergence_scan(df, is_bull):
+    if len(df) < 50: return None
     
     df['RSI'] = calculate_rsi(df['Close'], 14)
     live_price = float(df['Close'].iloc[-1])
     
-    # Analyze recent 15 bars vs prior 15 bars for swing points
-    recent_p_low = df['Low'].iloc[-15:].min()
-    prior_p_low = df['Low'].iloc[-30:-15].min()
-    
-    recent_rsi_low = df['RSI'].iloc[-15:].min()
-    prior_rsi_low = df['RSI'].iloc[-30:-15].min()
-    
-    recent_p_high = df['High'].iloc[-15:].max()
-    prior_p_high = df['High'].iloc[-30:-15].max()
-    
-    recent_rsi_high = df['RSI'].iloc[-15:].max()
-    prior_rsi_high = df['RSI'].iloc[-30:-15].max()
+    # Simple Local Minima/Maxima for Pivots (no lookahead bias)
+    pivot_window = 3
     
     if is_bull:
-        # REGULAR BULLISH (Reversal): Price Lower Low, RSI Higher Low
-        if recent_p_low < prior_p_low and recent_rsi_low > prior_rsi_low:
-            return {
-                "Setup": "🟢 Regular Bullish DVG",
-                "Indication": "Trend Reversal Up",
-                "Live Price": round(live_price, 2),
-                "Price Swing": f"₹{round(prior_p_low, 1)} ↘ ₹{round(recent_p_low, 1)}",
-                "RSI Swing": f"{round(prior_rsi_low, 1)} ↗ {round(recent_rsi_low, 1)}"
-            }
-        # HIDDEN BULLISH (Continuation): Price Higher Low, RSI Lower Low
-        elif recent_p_low > prior_p_low and recent_rsi_low < prior_rsi_low:
-            return {
-                "Setup": "🟢 Hidden Bullish DVG",
-                "Indication": "Pullback Exhausted (Continuation)",
-                "Live Price": round(live_price, 2),
-                "Price Swing": f"₹{round(prior_p_low, 1)} ↗ ₹{round(recent_p_low, 1)}",
-                "RSI Swing": f"{round(prior_rsi_low, 1)} ↘ {round(recent_rsi_low, 1)}"
-            }
+        df['Pivot_Low'] = df['Low'] == df['Low'].rolling(window=pivot_window*2+1).min().shift(-pivot_window)
+        pivots = df[df['Pivot_Low'] == True].copy()
+        
+        if len(pivots) < 2: return None
+        p2, p1 = pivots.iloc[-1], pivots.iloc[-2]
+        
+        # Must be recent
+        if (len(df) - df.index.get_loc(p2.name)) > 15: return None
+        
+        price_1, price_2 = p1['Low'], p2['Low']
+        rsi_1, rsi_2 = p1['RSI'], p2['RSI']
+        
+        if price_2 < price_1 and rsi_2 > rsi_1:
+            return {"Setup": "🟢 Regular Bullish DVG", "Entry": round(live_price, 2), "SL": round(price_2 * 0.99, 2), "Price": round(live_price, 2), "Detail": f"RSI {round(rsi_1,1)} ↗ {round(rsi_2,1)}"}
+        elif price_2 > price_1 and rsi_2 < rsi_1:
+            return {"Setup": "🟢 Hidden Bullish DVG", "Entry": round(live_price, 2), "SL": round(price_2 * 0.99, 2), "Price": round(live_price, 2), "Detail": f"RSI {round(rsi_1,1)} ↘ {round(rsi_2,1)}"}
+            
     else:
-        # REGULAR BEARISH (Reversal): Price Higher High, RSI Lower High
-        if recent_p_high > prior_p_high and recent_rsi_high < prior_rsi_high:
-            return {
-                "Setup": "🔴 Regular Bearish DVG",
-                "Indication": "Trend Reversal Down",
-                "Live Price": round(live_price, 2),
-                "Price Swing": f"₹{round(prior_p_high, 1)} ↗ ₹{round(recent_p_high, 1)}",
-                "RSI Swing": f"{round(prior_rsi_high, 1)} ↘ {round(recent_rsi_high, 1)}"
-            }
-        # HIDDEN BEARISH (Continuation): Price Lower High, RSI Higher High
-        elif recent_p_high < prior_p_high and recent_rsi_high > prior_rsi_high:
-            return {
-                "Setup": "🔴 Hidden Bearish DVG",
-                "Indication": "Relief Rally Exhausted (Continuation)",
-                "Live Price": round(live_price, 2),
-                "Price Swing": f"₹{round(prior_p_high, 1)} ↘ ₹{round(recent_p_high, 1)}",
-                "RSI Swing": f"{round(prior_rsi_high, 1)} ↗ {round(recent_rsi_high, 1)}"
-            }
+        df['Pivot_High'] = df['High'] == df['High'].rolling(window=pivot_window*2+1).max().shift(-pivot_window)
+        pivots = df[df['Pivot_High'] == True].copy()
+        
+        if len(pivots) < 2: return None
+        p2, p1 = pivots.iloc[-1], pivots.iloc[-2]
+        
+        if (len(df) - df.index.get_loc(p2.name)) > 15: return None
+        
+        price_1, price_2 = p1['High'], p2['High']
+        rsi_1, rsi_2 = p1['RSI'], p2['RSI']
+        
+        if price_2 > price_1 and rsi_2 < rsi_1:
+            return {"Setup": "🔴 Regular Bearish DVG", "Entry": round(live_price, 2), "SL": round(price_2 * 1.01, 2), "Price": round(live_price, 2), "Detail": f"RSI {round(rsi_1,1)} ↘ {round(rsi_2,1)}"}
+        elif price_2 < price_1 and rsi_2 > rsi_1:
+            return {"Setup": "🔴 Hidden Bearish DVG", "Entry": round(live_price, 2), "SL": round(price_2 * 1.01, 2), "Price": round(live_price, 2), "Detail": f"RSI {round(rsi_1,1)} ↗ {round(rsi_2,1)}"}
             
     return None
-
-def resample_to_75m(df):
-    """Resamples 15m intraday data into strict 75-minute chunks."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.resample('75min', offset='15min').agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
-    }).dropna()
 
 # ==========================================
 # 5. EXECUTION PIPELINE
 # ==========================================
-if st.button("🚀 EXECUTE RSI SCANNER", type="primary"):
+if st.button("🚀 EXECUTE SCANNER", type="primary"):
     tickers = get_target_tickers()
     
     if not tickers:
-        st.error("No symbols found. Please select a valid universe.")
+        st.error("No symbols found.")
     else:
         st.write(f"**Scanning {len(tickers)} stocks on `{tf_label}`...**")
         progress_bar = st.progress(0)
         
-        # Smart Lookback optimization
-        if timeframe == "1mo": 
+        # Optimize data fetch length based on timeframe
+        if timeframe == "3mo":
             period_val, interval_val = "max", "1mo"
+        elif timeframe == "1mo": 
+            period_val, interval_val = "10y", "1mo"
         elif timeframe == "1wk": 
-            period_val, interval_val = "10y", "1wk"
+            period_val, interval_val = "5y", "1wk"
         elif timeframe == "1d": 
             period_val, interval_val = "2y", "1d"
         elif timeframe == "75m":
-            period_val, interval_val = "60d", "15m" # Fetch 15m to rebuild 75m
+            period_val, interval_val = "60d", "15m" 
         else: 
             period_val, interval_val = "30d", "15m"
             
@@ -219,12 +336,21 @@ if st.button("🚀 EXECUTE RSI SCANNER", type="primary"):
                 df = market_data.copy() if len(tickers) == 1 else market_data[ticker].copy()
                 df = df.dropna()
                 
+                # Apply Custom Resampling
                 if timeframe == '75m':
-                    df = resample_to_75m(df)
+                    df = resample_custom(df, '75min')
+                elif timeframe == '3mo':
+                    df = resample_custom(df, '3ME')
                     
                 if len(df) < 40: continue
                 
-                res = check_rsi_divergence(df, is_bullish)
+                res = None
+                if "1." in strategy:
+                    res = run_gtf_sma_scan(df, is_bullish)
+                elif "2." in strategy:
+                    res = run_flip_scan(df, is_bullish)
+                elif "3." in strategy:
+                    res = run_rsi_divergence_scan(df, is_bullish)
                     
                 if res:
                     res['Asset'] = ticker.replace('.NS', '')
@@ -236,15 +362,15 @@ if st.button("🚀 EXECUTE RSI SCANNER", type="primary"):
         st.divider()
         
         if alerts:
-            st.success(f"Isolated {len(alerts)} divergence setup(s).")
-            out_df = pd.DataFrame(alerts)[['Asset', 'Setup', 'Indication', 'Live Price', 'Price Swing', 'RSI Swing']]
+            st.success(f"Isolated {len(alerts)} setup(s) matching your strict parameters.")
+            out_df = pd.DataFrame(alerts)[['Asset', 'Setup', 'Price', 'Entry', 'SL', 'Detail']]
             
             styled = out_df.style.set_properties(**{
                 'background-color': '#11151C', 'color': '#F8FAFC', 'border-color': '#1E293B', 'text-align': 'center'
             }).map(lambda v: 'color: #00F2FE; font-weight: 800;', subset=['Asset'])\
-              .map(lambda v: 'color: #00FF00; font-weight: 800;' if 'Bull' in str(v) else 'color: #FF4500; font-weight: 800;', subset=['Setup'])\
-              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Indication'])
+              .map(lambda v: 'color: #00FF00; font-weight: 800;' if 'Bull' in str(v) or 'Demand' in str(v) else 'color: #FF4500; font-weight: 800;', subset=['Setup'])\
+              .map(lambda v: 'color: #F6D365; font-weight: 800;', subset=['Detail'])
             
             st.dataframe(styled, use_container_width=True, hide_index=True)
         else:
-            st.error(f"0 Matches Found. No distinct RSI Divergences found on {tf_label} for this universe.")
+            st.error(f"0 Matches Found. Market structure does not currently align with this engine's parameters on {tf_label}.")
